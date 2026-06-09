@@ -3,3 +3,4 @@ opencv-python-headless
 fast-alpr
 Pillow
 numpy
+onnxruntime
