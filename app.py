@@ -274,10 +274,8 @@ def main():
                     result_image = draw_results(image_array, [], vehicle_results)
                     st.image(result_image, use_column_width=True)
                     for idx, v in enumerate(vehicle_results, 1):
-                        elapsed = v.get('elapsed_ms', 0)
-                        st.info(f"**Vehicle #{idx}**: {v['color']} {v['make_model']}  \n"
-                                f"**Top 3**: {v.get('top3_brands','N/A')}  \n"
-                                f"**Time**: {elapsed:.0f}ms")
+                        st.success(f"**Color**: {v['color']}")
+                        st.info(f"**Brand**: {v['make_model']}")
 
             elif detect_vehicles_fast:
                 with st.spinner("Running Fast model..."):
@@ -288,10 +286,8 @@ def main():
                     result_image = cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB)
                     st.image(result_image, use_column_width=True)
                     for idx, v in enumerate(vehicle_results, 1):
-                        elapsed = v.get('elapsed_ms', 0)
-                        st.info(f"**Vehicle #{idx}**: {v['color']} {v['make_model']}  \n"
-                                f"**Top 3**: {v.get('top3_brands','N/A')}  \n"
-                                f"**Time**: {elapsed:.0f}ms")
+                        st.success(f"**Color**: {v['color']}")
+                        st.info(f"**Brand**: {v['make_model']}")
 
             elif detect_vlm:
                 with st.spinner("Running Florence-2 VLM (may take 15-20s on CPU)..."):
@@ -302,10 +298,8 @@ def main():
                     result_image = cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB)
                     st.image(result_image, use_column_width=True)
                     for idx, v in enumerate(vehicle_results, 1):
-                        elapsed = v.get('elapsed_ms', 0)
-                        st.info(f"**Vehicle #{idx}**: {v['color']} {v['make_model']}  \n"
-                                f"**VLM Response**: {v.get('top3_brands','N/A')}  \n"
-                                f"**Time**: {elapsed:.0f}ms")
+                        st.success(f"**Color**: {v['color']}")
+                        st.info(f"**Brand**: {v['make_model']}")
 
             elif compare_all:
                 st.write("---")
@@ -341,7 +335,6 @@ def main():
                     if r1:
                         st.success(f"**Color**: {r1['color']}")
                         st.info(f"**Brand**: {r1['make_model']}")
-                        st.caption(f"Top 3: {r1.get('top3_brands','N/A')}")
                         st.metric("Time", f"{t_clip:.0f} ms")
                     else:
                         st.warning("No vehicle detected")
@@ -351,7 +344,6 @@ def main():
                     if r2:
                         st.success(f"**Color**: {r2['color']}")
                         st.info(f"**Brand**: {r2['make_model']}")
-                        st.caption(f"Top 3: {r2.get('top3_brands','N/A')}")
                         st.metric("Time", f"{t_fast:.0f} ms")
                     else:
                         st.warning("No vehicle detected")
@@ -361,7 +353,6 @@ def main():
                     if r3:
                         st.success(f"**Color**: {r3['color']}")
                         st.info(f"**Brand**: {r3['make_model']}")
-                        st.caption(f"Top 3: {r3.get('top3_brands','N/A')}")
                         st.metric("Time", f"{t_jordo:.0f} ms")
                     else:
                         st.warning("No vehicle detected")
@@ -371,7 +362,6 @@ def main():
                     if r4:
                         st.success(f"**Color**: {r4['color']}")
                         st.info(f"**Brand**: {r4['make_model']}")
-                        st.caption(f"VLM says: {r4.get('top3_brands','N/A')}")
                         st.metric("Time", f"{t_vlm:.0f} ms")
                     else:
                         st.warning("No vehicle detected")
