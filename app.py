@@ -79,13 +79,18 @@ def run_jordo23(image_bgr, model, class_mapping):
     confidences = results[0].boxes.conf.cpu().numpy()
     VEHICLE_CLASS_IDS = [2, 5, 7]
 
-    max_area, primary = -1, None
+    fh, fw = image_bgr.shape[:2]
+    best_score, primary = -1, None
     for box, cls, conf in zip(boxes, class_ids, confidences):
         if int(cls) in VEHICLE_CLASS_IDS and conf > 0.40:
             x1, y1, x2, y2 = map(int, box)
             area = (x2 - x1) * (y2 - y1)
-            if area > max_area:
-                max_area = area
+            cx = ((x1 + x2) / 2) / fw - 0.5
+            cy = ((y1 + y2) / 2) / fh - 0.5
+            dist = (cx ** 2 + cy ** 2) ** 0.5
+            score = (area / (fw * fh)) - 1.5 * dist
+            if score > best_score:
+                best_score = score
                 primary = {'coords': (x1, y1, x2, y2), 'crop': image_bgr[y1:y2, x1:x2], 'confidence': float(conf)}
 
     if primary is None or primary['crop'].size == 0:

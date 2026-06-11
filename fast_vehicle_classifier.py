@@ -16,25 +16,29 @@ VEHICLE_CLASS_IDS = [2, 5, 7]
 # LAB distances match human color perception far better than HSV
 # -------------------------------------------------------------------
 _CAR_PALETTE_LAB = [
-    ("Black",      10,   0,   0),
-    ("White",      95,   0,   2),
-    ("Silver",     75,   0,   1),
-    ("Grey",       55,   0,   0),
-    ("Dark Grey",  35,   0,   0),
-    ("Red",        40,  55,  35),
-    ("Dark Red",   28,  38,  22),
-    ("Orange",     60,  35,  55),
-    ("Yellow",     85,  -5,  75),
-    ("Blue",       35,   5, -45),
-    ("Dark Blue",  20,   5, -30),
-    ("Light Blue", 60,  -5, -30),
-    ("Green",      35, -25,  20),
-    ("Dark Green", 22, -18,  12),
-    ("Brown",      35,  12,  20),
-    ("Beige",      80,   3,  15),
-    ("Purple",     30,  20, -25),
-    ("Gold",       70,   5,  40),
-    ("Maroon",     25,  25,  10),
+    ("Black",        10,   0,   0),
+    ("White",        95,   0,   2),
+    ("Silver",       75,   0,   1),
+    ("Grey",         55,   0,  -1),
+    ("Dark Grey",    35,   0,   0),
+    ("Red",          40,  55,  35),
+    ("Dark Red",     28,  38,  22),
+    ("Orange",       60,  35,  55),
+    ("Yellow",       85,  -5,  75),
+    ("Blue",         35,   5, -45),
+    ("Dark Blue",    20,   5, -30),
+    ("Light Blue",   60,  -5, -30),
+    ("Green",        35, -25,  20),
+    ("Dark Green",   22, -18,  12),
+    ("Brown",        42,  14,   8),
+    ("Dark Brown",   25,  15,   1),
+    ("Bronze",       45,  10,  20),
+    ("Copper Brown", 38,  18,  10),
+    ("Beige",        80,   5,  12),
+    ("Tan",          65,   8,  14),
+    ("Purple",       30,  20, -25),
+    ("Gold",         70,   5,  40),
+    ("Maroon",       25,  25,  10),
 ]
 
 # Pre-convert palette to numpy array for fast distance calc
@@ -181,16 +185,23 @@ class FastVehicleDetector:
         class_ids = result.boxes.cls.cpu().numpy()
         confidences = result.boxes.conf.cpu().numpy()
 
-        # Select largest area vehicle
-        max_area = -1
+        # Select most-central vehicle — best represents the subject car
+        fh, fw = frame.shape[:2]
+        best_score = -1
         primary = None
 
         for box, cls, conf in zip(boxes, class_ids, confidences):
             if int(cls) in VEHICLE_CLASS_IDS and conf > 0.40:
                 x1, y1, x2, y2 = map(int, box)
                 area = (x2 - x1) * (y2 - y1)
-                if area > max_area:
-                    max_area = area
+                # Distance of box centre from frame centre (normalised)
+                cx = ((x1 + x2) / 2) / fw - 0.5
+                cy = ((y1 + y2) / 2) / fh - 0.5
+                dist = (cx ** 2 + cy ** 2) ** 0.5          # 0 = perfect centre
+                # Score: large + central wins; centrality weighted more
+                score = (area / (fw * fh)) - 1.5 * dist
+                if score > best_score:
+                    best_score = score
                     primary = {
                         'coords': (x1, y1, x2, y2),
                         'crop': frame[y1:y2, x1:x2],

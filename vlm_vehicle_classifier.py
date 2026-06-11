@@ -55,7 +55,7 @@ class VLMVehicleClassifier:
         return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
     def _select_primary_vehicle(self, frame):
-        """Run YOLO and return the largest vehicle crop."""
+        """Run YOLO and return the most-central vehicle crop."""
         results = self.detector(frame, verbose=False)
         if not results or results[0].boxes is None:
             return None
@@ -63,14 +63,19 @@ class VLMVehicleClassifier:
         boxes = results[0].boxes.xyxy.cpu().numpy()
         class_ids = results[0].boxes.cls.cpu().numpy()
         confidences = results[0].boxes.conf.cpu().numpy()
+        fh, fw = frame.shape[:2]
 
-        max_area, primary = -1, None
+        best_score, primary = -1, None
         for box, cls, conf in zip(boxes, class_ids, confidences):
             if int(cls) in VEHICLE_CLASS_IDS and conf > 0.40:
                 x1, y1, x2, y2 = map(int, box)
                 area = (x2 - x1) * (y2 - y1)
-                if area > max_area:
-                    max_area = area
+                cx = ((x1 + x2) / 2) / fw - 0.5
+                cy = ((y1 + y2) / 2) / fh - 0.5
+                dist = (cx ** 2 + cy ** 2) ** 0.5
+                score = (area / (fw * fh)) - 1.5 * dist
+                if score > best_score:
+                    best_score = score
                     primary = {
                         'coords': (x1, y1, x2, y2),
                         'crop': frame[y1:y2, x1:x2],
