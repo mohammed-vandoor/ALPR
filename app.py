@@ -164,6 +164,9 @@ def main():
     if 'vlm_detector' not in st.session_state:
         with st.spinner("Loading Florence-2 VLM (~550MB, one-time download)..."):
             st.session_state.vlm_detector = VLMVehicleClassifier()
+        st.session_state.vlm_available = (
+            st.session_state.vlm_detector.vlm is not None
+        )
     
     # Sidebar for image selection
     st.sidebar.header("Image Selection")
@@ -239,7 +242,9 @@ def main():
         with col_btn3:
             detect_vehicles_fast = st.button("⚡ Fast Model", type="secondary")
         with col_btn4:
-            detect_vlm = st.button("🧠 VLM Model", type="secondary")
+            vlm_ok = st.session_state.get('vlm_available', False)
+            detect_vlm = st.button("🧠 VLM Model", type="secondary", disabled=not vlm_ok,
+                                   help="Florence-2 VLM — only available locally (requires ~2GB RAM)")
         with col_btn5:
             compare_all = st.button("📊 Compare All", type="secondary")
 

@@ -4,8 +4,13 @@ import torch
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
-from transformers import AutoProcessor, AutoModelForCausalLM
 from fast_vehicle_classifier import detect_color_hsv
+
+try:
+    from transformers import AutoProcessor, AutoModelForCausalLM
+    VLM_AVAILABLE = True
+except Exception:
+    VLM_AVAILABLE = False
 
 VEHICLE_CLASS_IDS = [2, 5, 7]
 
@@ -19,20 +24,31 @@ class VLMVehicleClassifier:
         """
         print("Loading YOLO11 detector...")
         self.detector = YOLO("yolo11n.pt")
+        self.processor = None
+        self.vlm = None
 
-        print("Loading Florence-2-base VLM (~270MB)...")
-        self.processor = AutoProcessor.from_pretrained(
-            "microsoft/Florence-2-base",
-            trust_remote_code=True
-        )
-        self.vlm = AutoModelForCausalLM.from_pretrained(
-            "microsoft/Florence-2-base",
-            trust_remote_code=True,
-            torch_dtype=torch.float32,
-            attn_implementation="eager",
-        )
-        self.vlm.eval()
-        print("Florence-2 loaded.")
+        if not VLM_AVAILABLE:
+            print("Florence-2 unavailable: transformers import failed.")
+            return
+
+        try:
+            print("Loading Florence-2-base VLM (~270MB)...")
+            self.processor = AutoProcessor.from_pretrained(
+                "microsoft/Florence-2-base",
+                trust_remote_code=True
+            )
+            self.vlm = AutoModelForCausalLM.from_pretrained(
+                "microsoft/Florence-2-base",
+                trust_remote_code=True,
+                torch_dtype=torch.float32,
+                attn_implementation="eager",
+            )
+            self.vlm.eval()
+            print("Florence-2 loaded.")
+        except Exception as e:
+            print(f"Florence-2 failed to load: {e}")
+            self.processor = None
+            self.vlm = None
 
     def _to_pil(self, image_crop):
         img = cv2.resize(image_crop, (224, 224), interpolation=cv2.INTER_AREA)
@@ -88,8 +104,11 @@ class VLMVehicleClassifier:
         Returns (color, brand_model, raw_caption, elapsed_ms)
         """
         t0 = time.time()
-
         color = detect_color_hsv(image_crop)
+
+        if self.vlm is None or self.processor is None:
+            return color, "VLM unavailable", "Florence-2 could not be loaded on this server.", (time.time() - t0) * 1000
+
         pil_image = self._to_pil(image_crop)
 
         prompt = "<MORE_DETAILED_CAPTION>"
