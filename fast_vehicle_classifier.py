@@ -94,10 +94,17 @@ class FastVehicleDetector:
 
     def _format_label(self, label):
         """
-        dima806 labels are already clean e.g. 'BMW 3 Series', 'Range Rover Sport'.
-        Just return as-is.
+        Extract brand only from labels like 'BMW 3 Series' -> 'BMW',
+        'Range Rover Sport' -> 'Range Rover', 'Mercedes-Benz C-Class' -> 'Mercedes-Benz'.
         """
-        return label
+        two_word_brands = [
+            "Range Rover", "Land Rover", "Mercedes-Benz", "Alfa Romeo",
+            "Aston Martin", "Rolls-Royce",
+        ]
+        for brand in two_word_brands:
+            if label.startswith(brand):
+                return brand
+        return label.split()[0] if label else label
 
     def classify(self, image_crop):
         """

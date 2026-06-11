@@ -51,6 +51,17 @@ def load_jordo23():
     model.eval()
     return model, checkpoint["class_mapping"]
 
+def extract_brand(label):
+    """Extract brand only from full model label e.g. 'BMW 3 Series' -> 'BMW'."""
+    two_word_brands = [
+        "Range Rover", "Land Rover", "Mercedes-Benz", "Alfa Romeo",
+        "Aston Martin", "Rolls-Royce",
+    ]
+    for brand in two_word_brands:
+        if label.startswith(brand):
+            return brand
+    return label.split()[0] if label else label
+
 def run_jordo23(image_bgr, model, class_mapping):
     """Run Jordo23 EfficientNet-B4 on a BGR image crop and return result dict."""
     transform = transforms.Compose([
@@ -93,7 +104,7 @@ def run_jordo23(image_bgr, model, class_mapping):
     top3_probs, top3_idx = torch.topk(probs, 3)
     elapsed_ms = (time.time() - t0) * 1000
 
-    top_label = class_mapping[top3_idx[0][0].item()]
+    top_label = extract_brand(class_mapping[top3_idx[0][0].item()])
     top3_str = ", ".join(
         f"{class_mapping[top3_idx[0][i].item()]} ({top3_probs[0][i].item()*100:.1f}%)"
         for i in range(3)
