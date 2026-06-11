@@ -9,75 +9,91 @@ from PIL import Image
 VEHICLE_CLASS_IDS = [2, 5, 7]
 
 # -------------------------------------------------------------------
-# COLOR DETECTION — Fast HSV rule-based (no model, ~1ms)
-# More reliable than CLIP for color since color is physics, not semantics
+# COLOR DETECTION — LAB k-means with perceptual palette matching (~5ms)
 # -------------------------------------------------------------------
-def _hsv_to_name(h, s, v):
-    """Map median HSV values to a color name."""
-    if v < 45:
-        return "Black"
-    if v > 200 and s < 40:
-        return "White"
-    if s < 45:
-        return "Silver" if v > 150 else "Grey"
-    if (0 <= h <= 10) or (165 <= h <= 180):
-        return "Red"
-    if 11 <= h <= 25:
-        return "Orange"
-    if 26 <= h <= 34:
-        return "Yellow"
-    if 35 <= h <= 85:
-        return "Green"
-    if 86 <= h <= 130:
-        return "Dark Blue" if v < 90 else "Blue"
-    if 131 <= h <= 164:
-        return "Purple"
-    return "Unknown"
+# Reference palette in LAB color space (perceptually uniform)
+# Each entry: (name, L, a, b) — real-world car paint samples
+# LAB distances match human color perception far better than HSV
+# -------------------------------------------------------------------
+_CAR_PALETTE_LAB = [
+    ("Black",      10,   0,   0),
+    ("White",      95,   0,   2),
+    ("Silver",     75,   0,   1),
+    ("Grey",       55,   0,   0),
+    ("Dark Grey",  35,   0,   0),
+    ("Red",        40,  55,  35),
+    ("Dark Red",   28,  38,  22),
+    ("Orange",     60,  35,  55),
+    ("Yellow",     85,  -5,  75),
+    ("Blue",       35,   5, -45),
+    ("Dark Blue",  20,   5, -30),
+    ("Light Blue", 60,  -5, -30),
+    ("Green",      35, -25,  20),
+    ("Dark Green", 22, -18,  12),
+    ("Brown",      35,  12,  20),
+    ("Beige",      80,   3,  15),
+    ("Purple",     30,  20, -25),
+    ("Gold",       70,   5,  40),
+    ("Maroon",     25,  25,  10),
+]
+
+# Pre-convert palette to numpy array for fast distance calc
+_PALETTE_NAMES = [p[0] for p in _CAR_PALETTE_LAB]
+_PALETTE_LAB = np.array([[p[1], p[2], p[3]] for p in _CAR_PALETTE_LAB], dtype=np.float32)
 
 
 def detect_color_hsv(image_crop):
     """
-    Dominant body-color detection using k-means clustering on HSV.
-    - Crops to centre 70% to remove background
-    - Masks out near-black (windows/tyres) and near-white (sky/reflections)
-    - Runs k-means (k=3) on remaining pixels, picks the largest cluster
+    Accurate car color detection using:
+    1. Centre crop + pixel masking to isolate body panels
+    2. K-means (k=4) to find dominant color cluster
+    3. LAB nearest-neighbor match against real car paint palette
     """
     try:
         h, w = image_crop.shape[:2]
 
-        # Centre crop — removes most background
+        # Centre 70% crop — removes road, sky, background
         roi = image_crop[int(h*0.15):int(h*0.85), int(w*0.15):int(w*0.85)]
 
+        # Convert to both HSV (for masking) and LAB (for color naming)
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        H, S, V = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB).astype(np.float32)
 
-        # Mask out windows/tyres (very dark) and sky/reflections (very bright + unsaturated)
-        body_mask = (V > 35) & ~((V > 195) & (S < 30))
-        pixels = hsv[body_mask]
+        V = hsv[:, :, 2]
+        S = hsv[:, :, 1]
 
-        if len(pixels) < 50:
-            # Fallback to simple median if too few pixels survive masking
-            h_m, s_m, v_m = np.median(H), np.median(S), np.median(V)
-            return _hsv_to_name(h_m, s_m, v_m)
+        # Mask: remove very dark pixels (windows/tyres) and blown-out reflections
+        body_mask = (V > 30) & ~((V > 220) & (S < 15))
+        pixels_lab = lab[body_mask]
 
-        # K-means clustering — find dominant color cluster
-        samples = pixels.astype(np.float32)
-        if len(samples) > 2000:
-            idx = np.random.choice(len(samples), 2000, replace=False)
-            samples = samples[idx]
+        if len(pixels_lab) < 50:
+            pixels_lab = lab.reshape(-1, 3)
 
-        k = min(3, len(samples))
+        # Subsample for speed
+        if len(pixels_lab) > 2000:
+            idx = np.random.choice(len(pixels_lab), 2000, replace=False)
+            pixels_lab = pixels_lab[idx]
+
+        # K-means on LAB pixels
+        k = min(4, len(pixels_lab))
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
         _, labels, centers = cv2.kmeans(
-            samples, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS
+            pixels_lab, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS
         )
 
-        # Pick the largest cluster
+        # Largest cluster = dominant body color
         counts = np.bincount(labels.flatten())
-        dominant = centers[np.argmax(counts)]
-        h_d, s_d, v_d = float(dominant[0]), float(dominant[1]), float(dominant[2])
+        dominant_lab = centers[np.argmax(counts)]
 
-        return _hsv_to_name(h_d, s_d, v_d)
+        # Scale OpenCV LAB to real LAB range: L*[0,100], a*[-128,127], b*[-128,127]
+        L = dominant_lab[0] * 100.0 / 255.0
+        a = dominant_lab[1] - 128.0
+        b = dominant_lab[2] - 128.0
+
+        # Nearest-neighbor match in perceptual LAB space (Euclidean ΔE)
+        query = np.array([L, a, b], dtype=np.float32)
+        dists = np.linalg.norm(_PALETTE_LAB - query, axis=1)
+        return _PALETTE_NAMES[int(np.argmin(dists))]
 
     except Exception:
         return "Unknown"
