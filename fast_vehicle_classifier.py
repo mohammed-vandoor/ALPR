@@ -46,6 +46,9 @@ _CAR_PALETTE_LAB = [
 _PALETTE_NAMES = [p[0] for p in _CAR_PALETTE_LAB]
 _PALETTE_LAB = np.array([[p[1], p[2], p[3]] for p in _CAR_PALETTE_LAB], dtype=np.float32)
 
+# Pre-built CLAHE — reuse across calls (avoids re-allocating each frame)
+_CLAHE = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+
 
 def detect_color_hsv(image_crop):
     """
@@ -60,6 +63,13 @@ def detect_color_hsv(image_crop):
         # Use top 65% of height — removes road/ground below the car
         # Horizontal: trim 10% each side to remove roadside clutter
         roi = image_crop[int(h*0.05):int(h*0.70), int(w*0.10):int(w*0.90)]
+
+        # CLAHE on L channel — normalises overcast/shaded lighting
+        # This recovers warm tones washed out by grey skies
+        lab_eq = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+        l, a_ch, b_ch = cv2.split(lab_eq)
+        l = _CLAHE.apply(l)
+        roi = cv2.cvtColor(cv2.merge([l, a_ch, b_ch]), cv2.COLOR_LAB2BGR)
 
         # Convert to both HSV (for masking) and LAB (for color naming)
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
@@ -76,13 +86,13 @@ def detect_color_hsv(image_crop):
             pixels_lab = lab.reshape(-1, 3)
 
         # Subsample for speed
-        if len(pixels_lab) > 2000:
-            idx = np.random.choice(len(pixels_lab), 2000, replace=False)
+        if len(pixels_lab) > 800:
+            idx = np.random.choice(len(pixels_lab), 800, replace=False)
             pixels_lab = pixels_lab[idx]
 
         # K-means on LAB pixels
-        k = min(4, len(pixels_lab))
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+        k = min(3, len(pixels_lab))
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 6, 1.0)
         _, labels, centers = cv2.kmeans(
             pixels_lab, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS
         )
