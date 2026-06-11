@@ -19,8 +19,9 @@ _CAR_PALETTE_LAB = [
     ("Black",        10,   0,   0),
     ("White",        95,   0,   2),
     ("Silver",       75,   0,   1),
-    ("Grey",         55,   0,  -1),
-    ("Dark Grey",    35,   0,   0),
+    ("Grey",         55,  -6,  -1),
+    ("Dark Grey",    35,  -5,   0),
+    ("Taupe",        60,  -5,   0),
     ("Red",          40,  55,  35),
     ("Dark Red",     28,  38,  22),
     ("Orange",       60,  35,  55),
@@ -56,8 +57,9 @@ def detect_color_hsv(image_crop):
     try:
         h, w = image_crop.shape[:2]
 
-        # Centre 70% crop — removes road, sky, background
-        roi = image_crop[int(h*0.15):int(h*0.85), int(w*0.15):int(w*0.85)]
+        # Use top 65% of height — removes road/ground below the car
+        # Horizontal: trim 10% each side to remove roadside clutter
+        roi = image_crop[int(h*0.05):int(h*0.70), int(w*0.10):int(w*0.90)]
 
         # Convert to both HSV (for masking) and LAB (for color naming)
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
