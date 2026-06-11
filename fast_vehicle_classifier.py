@@ -12,56 +12,73 @@ VEHICLE_CLASS_IDS = [2, 5, 7]
 # COLOR DETECTION — Fast HSV rule-based (no model, ~1ms)
 # More reliable than CLIP for color since color is physics, not semantics
 # -------------------------------------------------------------------
+def _hsv_to_name(h, s, v):
+    """Map median HSV values to a color name."""
+    if v < 45:
+        return "Black"
+    if v > 200 and s < 40:
+        return "White"
+    if s < 45:
+        return "Silver" if v > 150 else "Grey"
+    if (0 <= h <= 10) or (165 <= h <= 180):
+        return "Red"
+    if 11 <= h <= 25:
+        return "Orange"
+    if 26 <= h <= 34:
+        return "Yellow"
+    if 35 <= h <= 85:
+        return "Green"
+    if 86 <= h <= 130:
+        return "Dark Blue" if v < 90 else "Blue"
+    if 131 <= h <= 164:
+        return "Purple"
+    return "Unknown"
+
+
 def detect_color_hsv(image_crop):
     """
-    Fast HSV-based color detection using masked region analysis.
-    Focuses on the center 60% of the crop to avoid background/windows.
-    Returns a color name string.
+    Dominant body-color detection using k-means clustering on HSV.
+    - Crops to centre 70% to remove background
+    - Masks out near-black (windows/tyres) and near-white (sky/reflections)
+    - Runs k-means (k=3) on remaining pixels, picks the largest cluster
     """
     try:
         h, w = image_crop.shape[:2]
 
-        # Focus on center region — avoids windows, tyres, background
-        cx1, cy1 = int(w * 0.2), int(h * 0.2)
-        cx2, cy2 = int(w * 0.8), int(h * 0.8)
-        roi = image_crop[cy1:cy2, cx1:cx2]
+        # Centre crop — removes most background
+        roi = image_crop[int(h*0.15):int(h*0.85), int(w*0.15):int(w*0.85)]
 
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        H, S, V = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
 
-        # Compute median HSV — more robust than mean against outliers
-        h_med = np.median(hsv[:, :, 0])
-        s_med = np.median(hsv[:, :, 1])
-        v_med = np.median(hsv[:, :, 2])
+        # Mask out windows/tyres (very dark) and sky/reflections (very bright + unsaturated)
+        body_mask = (V > 35) & ~((V > 195) & (S < 30))
+        pixels = hsv[body_mask]
 
-        # Brightness-first classification
-        if v_med < 45:
-            return "Black"
-        if v_med > 210 and s_med < 40:
-            return "White"
-        if s_med < 35:
-            if v_med > 150:
-                return "Silver"
-            return "Grey"
+        if len(pixels) < 50:
+            # Fallback to simple median if too few pixels survive masking
+            h_m, s_m, v_m = np.median(H), np.median(S), np.median(V)
+            return _hsv_to_name(h_m, s_m, v_m)
 
-        # Hue-based classification (OpenCV H range: 0–180)
-        if (0 <= h_med <= 10) or (165 <= h_med <= 180):
-            return "Red"
-        if 11 <= h_med <= 25:
-            return "Orange"
-        if 26 <= h_med <= 34:
-            return "Yellow"
-        if 35 <= h_med <= 85:
-            return "Green"
-        if 86 <= h_med <= 125:
-            return "Blue"
-        if 126 <= h_med <= 145:
-            if v_med < 80:
-                return "Dark Blue"
-            return "Blue"
-        if 146 <= h_med <= 164:
-            return "Purple"
+        # K-means clustering — find dominant color cluster
+        samples = pixels.astype(np.float32)
+        if len(samples) > 2000:
+            idx = np.random.choice(len(samples), 2000, replace=False)
+            samples = samples[idx]
 
-        return "Unknown"
+        k = min(3, len(samples))
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+        _, labels, centers = cv2.kmeans(
+            samples, k, None, criteria, 3, cv2.KMEANS_PP_CENTERS
+        )
+
+        # Pick the largest cluster
+        counts = np.bincount(labels.flatten())
+        dominant = centers[np.argmax(counts)]
+        h_d, s_d, v_d = float(dominant[0]), float(dominant[1]), float(dominant[2])
+
+        return _hsv_to_name(h_d, s_d, v_d)
+
     except Exception:
         return "Unknown"
 
