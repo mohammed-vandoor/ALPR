@@ -1,3 +1,4 @@
+
 import os
 import json
 import cv2
@@ -17,6 +18,18 @@ _COLOR_TFM = transforms.Compose([
 
 _MODEL_PATH   = os.path.join(os.path.dirname(__file__), "models", "color_classifier.pth")
 _CLASSES_PATH = os.path.join(os.path.dirname(__file__), "models", "color_classes.json")
+
+if not os.path.exists(_MODEL_PATH):
+    try:
+        from huggingface_hub import hf_hub_download
+        os.makedirs(os.path.dirname(_MODEL_PATH), exist_ok=True)
+        _dl = hf_hub_download(repo_id="NihalVandoor/alpr-color-classifier",
+                              filename="color_classifier.pth")
+        import shutil
+        shutil.copy(_dl, _MODEL_PATH)
+        print("Downloaded colour model from HuggingFace Hub")
+    except Exception as e:
+        print(f"Could not download colour model: {e}")
 
 if os.path.exists(_MODEL_PATH) and os.path.exists(_CLASSES_PATH):
     try:
