@@ -25,8 +25,8 @@ _COLOR_TFM = transforms.Compose([
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
 ])
 
-_MODEL_PATH   = os.path.join(os.path.dirname(__file__), "color_classifier.pth")
-_CLASSES_PATH = os.path.join(os.path.dirname(__file__), "color_classes.json")
+_MODEL_PATH   = os.path.join(os.path.dirname(__file__), "models", "color_classifier.pth")
+_CLASSES_PATH = os.path.join(os.path.dirname(__file__), "models", "color_classes.json")
 
 if os.path.exists(_MODEL_PATH) and os.path.exists(_CLASSES_PATH):
     try:
@@ -99,7 +99,7 @@ class FastVehicleDetector:
         - EfficientNet-B0 via HuggingFace pipeline for brand (~50-100ms CPU)
         """
         # Main detector
-        self.base_detector = YOLO("yolo11n.pt")
+        self.base_detector = YOLO(os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "yolo11n.pt"))
 
         # ViT fine-tuned on car makes & models (300+ classes, ~84% top-1 accuracy)
         # Returns clean labels like "BMW 3 Series", "Range Rover Sport", "Audi Q7"

@@ -69,7 +69,7 @@ def run_jordo23(image_bgr, model, class_mapping):
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
-    detector = YOLO("yolo11n.pt")
+    detector = YOLO(os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "yolo11n.pt"))
     results = detector(image_bgr, verbose=False)
     if not results or results[0].boxes is None:
         return None

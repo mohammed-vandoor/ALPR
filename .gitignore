@@ -10,10 +10,15 @@ __pycache__/
 *.so
 .Python
 
-# Model files
+# Model files (large binaries — not tracked in git)
 *.pt
 *.pth
 *.onnx
+
+# Training data
+data/
+data_merged.zip
+vcor-vehicle-color-recognition-dataset.zip
 
 # IDE
 .vscode/

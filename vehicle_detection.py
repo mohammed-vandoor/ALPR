@@ -1,3 +1,4 @@
+import os
 import cv2
 import time
 import numpy as np
@@ -49,7 +50,7 @@ class VehicleDetector:
     def __init__(self):
         """Initialize vehicle detection models with YOLO11 + HuggingFace classifiers."""
         # Main detector + tracking engine
-        self.base_detector = YOLO("yolo11n.pt")
+        self.base_detector = YOLO(os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "yolo11n.pt"))
         
         # CLIP zero-shot classifier — used for both color and brand
         # Works from any angle, globally, no retraining needed

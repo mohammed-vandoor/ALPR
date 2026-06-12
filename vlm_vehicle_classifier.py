@@ -1,3 +1,4 @@
+import os
 import cv2
 import time
 import torch
@@ -23,7 +24,7 @@ class VLMVehicleClassifier:
         Uses YOLO11 for detection + Florence-2 for vehicle description.
         """
         print("Loading YOLO11 detector...")
-        self.detector = YOLO("yolo11n.pt")
+        self.detector = YOLO(os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "yolo11n.pt"))
         self.processor = None
         self.vlm = None
 
