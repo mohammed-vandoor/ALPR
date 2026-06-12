@@ -1,158 +1,183 @@
-# ALPR — Automatic Licence Plate Recognition & Vehicle Classification
+# 🚗 ALPR — Automatic Licence Plate Recognition & Vehicle Identification
 
-Real-time vehicle identification system for CCTV streams. Detects **number plates**, **colour**, and **brand** from live video or uploaded images.
+A real-time system that identifies vehicles from CCTV footage or uploaded images.  
+For each vehicle it tells you: **the licence plate number**, **the colour**, and **the brand**.
 
----
-
-## System Overview
-
-```
-CCTV / Image Upload
-       │
-       ▼
-┌─────────────────┐
-│  YOLO11n         │  Vehicle detection (bounding boxes)
-│  yolo11n.pt      │  Classes: car, bus, truck
-└────────┬────────┘
-         │ vehicle crop
-    ┌────┴────────────────────────────────┐
-    │                                     │
-    ▼                                     ▼
-┌──────────────────┐          ┌──────────────────────┐
-│  Colour Model     │          │  Brand Model          │
-│  EfficientNet-B0  │          │  ViT / EfficientNet   │
-│  color_classifier │          │  dima806 (300+ makes) │
-│  15 colour classes│          │  + Jordo23 (8949 cls) │
-└──────────────────┘          └──────────────────────┘
-         │                                │
-         └──────────────┬─────────────────┘
-                        ▼
-               ┌─────────────────┐
-               │  fast-alpr       │
-               │  Number Plate    │
-               │  OCR + Detection │
-               └─────────────────┘
-                        │
-                        ▼
-              Streamlit Dashboard
-         Colour | Brand | Plate Number
-```
+Built for car wash centres — when a car drives in, the system reads the plate and records the colour and brand automatically.
 
 ---
 
-## Project Structure
+## What Does This System Do?
 
-```
-ALPR/
-├── app.py                      # Streamlit UI — main entry point
-├── fast_vehicle_classifier.py  # Fast colour + brand pipeline (~20ms)
-├── vehicle_detection.py        # CLIP-based classifier
-├── vlm_vehicle_classifier.py   # Florence-2 VLM (local only)
-│
-├── models/
-│   ├── yolo11n.pt              # YOLO11 nano detector
-│   ├── color_classifier.pth    # Trained EfficientNet-B0 colour model
-│   └── color_classes.json      # 15 colour class labels
-│
-├── training/
-│   ├── train_color_v2.py       # Training script (EfficientNet-B0)
-│   └── train_color_classifier.py # Earlier MobileNetV3 script (reference)
-│
-├── requirements.txt
-├── packages.txt                # Streamlit Cloud system deps
-└── .python-version             # Python 3.11 pin for Streamlit Cloud
-```
+When you upload a photo (or in the future, connect a live camera), the system will:
+
+1. **Find the car** in the image — even if there are multiple cars, it picks the main one (the largest / closest)
+2. **Read the licence plate** — using AI-powered OCR (text recognition)
+3. **Detect the colour** — using a trained AI model (15 colours: black, white, grey, silver, brown, beige, blue, red, green, yellow, orange, gold, purple, pink, tan)
+4. **Identify the brand** — using a model trained on 8,949 vehicle types (BMW, Toyota, Ford, etc.)
+5. **Show everything on screen** — colour-coded boxes drawn on the image, results shown as cards below
 
 ---
 
-## Colour Detection
+## How to Use It (Step by Step)
 
-### Model
-- **Architecture**: EfficientNet-B0 (pretrained on ImageNet, fine-tuned)
-- **Classes (15)**: beige, black, blue, brown, gold, green, grey, orange, pink, purple, red, silver, tan, white, yellow
-- **Accuracy**: ~88–92% on held-out validation set
-- **Inference**: ~5–8ms per crop on CPU
-
-### Training Data (21,000 images combined)
-| Dataset | Images | Source |
-|---|---|---|
-| VCoR (Vehicle Color Recognition) | 7,267 | Kaggle — road CCTV cameras |
-| seebicb vehicle-color-recognition | 7,100 | Kaggle — road cameras |
-| DataCluster vehicle-color-detection | 6,633 | Kaggle — annotated bounding boxes |
-
-### Training Pipeline (`training/train_color_v2.py`)
-1. **Merge** all 3 datasets into unified colour folders (`data/merged/<colour>/`)
-2. **Augmentation** (CCTV-optimised):
-   - Random crop, horizontal flip
-   - ColorJitter (brightness ±40%, contrast ±40%, saturation ±30%)
-   - GaussianBlur to simulate camera quality variation
-3. **Fine-tune** EfficientNet-B0 with AdamW + CosineAnnealing LR
-4. **Label smoothing** (0.1) to prevent overconfidence on ambiguous colours
-
-### To retrain
-```bash
-# 1. Download datasets from Kaggle
-kaggle datasets download landrykezebou/vcor-vehicle-color-recognition-dataset -p data/vcor
-kaggle datasets download seebicb/vehicle-color-recognition -p data/seebicb
-kaggle datasets download dataclusterlabs/vehicle-color-detection-dataset -p data/dataclusterlabs
-
-# 2. Extract
-unzip data/vcor/*.zip -d data/vcor
-unzip data/seebicb/*.zip -d data/seebicb
-unzip data/dataclusterlabs/*.zip -d data/dataclusterlabs
-
-# 3. Train (use Google Colab T4 GPU for ~8 min, or CPU for ~60 min)
-python training/train_color_v2.py
-
-# Output: models/color_classifier.pth + models/color_classes.json
-```
-
----
-
-## Brand Detection
-
-### Models used
-| Model | Classes | Accuracy | Speed |
-|---|---|---|---|
-| `dima806/car_models_image_detection` (ViT) | 300+ | ~84% top-1 | ~50ms CPU |
-| `Jordo23/car-brand-classification` (EfficientNet) | 8,949 | ~78% | ~80ms CPU |
-
-Both extract brand only (e.g. "BMW 3 Series" → "BMW").
-
----
-
-## Number Plate Detection
-
-Uses `fast-alpr` library — combines YOLO-based plate detector with OCR for plate text extraction.
-
----
-
-## Running Locally
+### Running Locally on Your Computer
 
 ```bash
-# Install dependencies
-python -m venv venv
+# 1. Open a terminal and go to the project folder
+cd /path/to/ALPR
+
+# 2. Activate the environment (this loads all the required tools)
 source venv/bin/activate
-pip install -r requirements.txt
 
-# Run
+# 3. Start the app
 streamlit run app.py
 ```
 
+Then open your browser at **http://localhost:8501**
+
+### Using the App
+
+1. On the left sidebar — choose **Upload Image** or **Select from test_images**
+2. Pick your image
+3. Click one of the three buttons:
+   - **🔍 Detect Plates** — only reads licence plates
+   - **🚗 Identify Vehicle** — only detects colour and brand
+   - **⚡ Run Full Analysis** — does everything at once (recommended)
+4. Results appear as three cards: **Colour · Brand · Licence Plate**
+
 ---
 
-## Streamlit Cloud Deployment
+## Project File Structure
 
-- Python version pinned to 3.11 via `.python-version`
-- System package `libgl1` required for OpenCV (see `packages.txt`)
-- **Note**: `color_classifier.pth` and `yolo11n.pt` are not in git (large files).
-  The app falls back to LAB k-means colour detection if the trained model is not present.
-  To enable the trained model on Streamlit Cloud, upload to HuggingFace Hub and add auto-download.
+```
+ALPR/
+│
+├── app.py                        ← Main app (the Streamlit web interface)
+├── fast_vehicle_classifier.py    ← Colour detection using trained AI model
+│
+├── models/                       ← AI model files (not stored in GitHub — too large)
+│   ├── yolo11n.pt                ← Detects vehicles in images (YOLO)
+│   ├── color_classifier.pth      ← Our trained colour model (EfficientNet-B0)
+│   └── color_classes.json        ← The 15 colour names the model knows
+│
+├── training/                     ← Scripts used to train the colour model
+│   ├── train_color_v2.py         ← Main training script (EfficientNet-B0)
+│   └── train_color_classifier.py ← Earlier version (MobileNetV3, kept for reference)
+│
+├── archive/                      ← Old experiments (not used in production)
+│   ├── vehicle_detection.py      ← CLIP-based detector (replaced)
+│   └── vlm_vehicle_classifier.py ← Florence-2 VLM (too slow for real-time)
+│
+├── test_images/                  ← Sample images to test the app
+├── requirements.txt              ← Python packages needed to run the app
+├── packages.txt                  ← System packages needed (for Linux servers)
+├── runtime.txt                   ← Pins Python version to 3.11
+└── README.md                     ← This file
+```
+
+---
+
+## The AI Models — How Each One Works
+
+### 1. Vehicle Detector — YOLO11n (`models/yolo11n.pt`)
+- **What it does:** Scans the image and draws a box around every car, bus, or truck it finds
+- **How it picks the "main" car:** Scores each car by size + how close to the bottom of the frame it is (closer = larger in frame = the car you care about)
+- **Speed:** ~15ms per image on CPU
+
+### 2. Colour Detector — EfficientNet-B0 (`models/color_classifier.pth`)
+- **What it does:** Takes a crop of the car body and classifies its colour
+- **How it was trained:** We merged 3 datasets totalling ~21,000 car images and fine-tuned a pretrained EfficientNet-B0 model on them
+- **Colours it knows:** beige, black, blue, brown, gold, green, grey, orange, pink, purple, red, silver, tan, white, yellow
+- **Accuracy:** ~88–92% on the test set
+- **Speed:** ~5ms per crop on CPU
+- **Where the model lives:** Hosted on HuggingFace Hub at `NihalVandoor/alpr-color-classifier` — downloaded automatically on first run
+
+### 3. Brand Detector — Jordo23 EfficientNet-B4
+- **What it does:** Classifies the car brand (make/model) from the vehicle crop
+- **Source:** Hosted on HuggingFace at `Jordo23/vehicle-classifier`
+- **Classes:** 8,949 vehicle types
+- **Output:** Returns just the brand name e.g. "BMW", "Toyota", "Range Rover"
+- **Speed:** ~200–400ms on CPU (downloaded automatically on first run)
+
+### 4. Licence Plate Reader — fast-alpr
+- **What it does:** Two steps — first detects where the plate is (YOLO-based), then reads the text (OCR)
+- **Plate matching:** When multiple cars are in the image, it matches the plate to the primary vehicle using bounding box overlap, then proximity as a fallback
+- **Annotated image:** The matched plate gets a **green box**, other plates get an **orange box**
+
+---
+
+## Training the Colour Model (For Developers)
+
+The colour model was trained on Google Colab using a free T4 GPU. Here's how to retrain it if you want to improve accuracy or add new colours.
+
+### Datasets Used
+| Dataset | Images | Notes |
+|---|---|---|
+| VCoR (Vehicle Color Recognition) | ~7,200 | Road CCTV cameras |
+| seebicb vehicle-color-recognition | ~7,100 | Road cameras |
+| DataCluster vehicle-color-detection | ~6,600 | Annotated bounding boxes |
+
+### Steps to Retrain
+
+**1. Download the datasets** from Kaggle and put them in `data/` folder
+
+**2. Run the merge + training script:**
+```bash
+python training/train_color_v2.py
+```
+This will:
+- Merge all three datasets into one unified folder (`data/merged/<colour>/`)
+- Apply data augmentation (random crop, colour jitter, blur) to simulate CCTV conditions
+- Fine-tune EfficientNet-B0 for 12 epochs
+- Save the model to `models/color_classifier.pth`
+
+**3. Upload the new model to HuggingFace:**
+```bash
+hf auth login
+hf upload NihalVandoor/alpr-color-classifier models/color_classifier.pth color_classifier.pth --repo-type model
+```
+
+### Training Settings
+| Setting | Value | Why |
+|---|---|---|
+| Base model | EfficientNet-B0 | Fast + accurate, good for mobile/edge |
+| Image size | 224×224 | Standard for EfficientNet |
+| Epochs | 12 | Enough to converge without overfitting |
+| Batch size | 32 | Fits in GPU memory |
+| Optimizer | AdamW | Better generalisation than Adam |
+| LR schedule | CosineAnnealing | Smooth decay, avoids sharp drops |
+| Label smoothing | 0.1 | Prevents overconfidence on ambiguous colours |
+| Augmentation | ColorJitter + GaussianBlur | Simulates CCTV lighting variation |
+
+---
+
+## Deploying to Streamlit Cloud
+
+1. Push your code to GitHub
+2. Go to **https://share.streamlit.io** → New app → connect your repo
+3. Set main file to `app.py`
+4. The app will automatically:
+   - Install system packages from `packages.txt`
+   - Install Python packages from `requirements.txt`
+   - Download AI models from HuggingFace on first startup
+
+> **Note:** The first startup takes 2–3 minutes while models download. After that it's cached.
+
+---
+
+## Known Limitations
+
+- **Colour accuracy under bad lighting:** The model was trained on daytime road images. Very dark CCTV footage may return incorrect colours.
+- **Brand detection speed:** The Jordo23 brand model is ~200–400ms on CPU. For real-time video streams, a GPU is recommended.
+- **Licence plate OCR:** Works best on clear, front-facing plates. Heavily angled or dirty plates may not read correctly.
+- **Multiple cars:** The system always picks one "primary" vehicle. If you need results for all cars in the frame, the code would need modification.
 
 ---
 
 ## Future Improvements
-- Upload `color_classifier.pth` to HuggingFace Hub for cloud deployment
-- Add real-time video stream support (RTSP/webcam)
-- Fine-tune brand model on European car dataset
-- Add make/model confidence threshold filtering
+
+- Connect to live RTSP camera stream (e.g. IP cameras at car wash entry)
+- Add database logging — store plate + colour + brand + timestamp per vehicle visit
+- Upload `color_classifier.pth` re-trained on night/CCTV-specific images for better low-light accuracy
+- Add make/model confidence threshold — skip brand result if confidence is too low
