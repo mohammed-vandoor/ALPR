@@ -9,3 +9,6 @@ torch
 torchvision
 timm
 huggingface_hub
+matplotlib
+scipy
+polars
