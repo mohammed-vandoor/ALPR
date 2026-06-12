@@ -1,22 +1,12 @@
 import os
 import json
 import cv2
-import time
 import numpy as np
 import torch
 import torch.nn as nn
 from torchvision import transforms, models
-from ultralytics import YOLO
-from transformers import pipeline
 from PIL import Image
 
-# Target class IDs from COCO dataset (2: car, 5: bus, 7: truck)
-VEHICLE_CLASS_IDS = [2, 5, 7]
-
-# -------------------------------------------------------------------
-# COLOR DETECTION — Trained MobileNetV3-Small (88% accuracy on VCoR)
-# Falls back to LAB k-means if model file not found
-# -------------------------------------------------------------------
 _COLOR_MODEL = None
 _COLOR_CLASSES = None
 _COLOR_TFM = transforms.Compose([
@@ -49,8 +39,8 @@ if os.path.exists(_MODEL_PATH) and os.path.exists(_CLASSES_PATH):
 
 def detect_color_hsv(image_crop):
     """
-    Car colour detection.
-    Uses trained MobileNetV3 if available (~5ms), otherwise LAB k-means fallback.
+    Car colour detection using trained EfficientNet-B0 (~5ms).
+    Falls back to LAB k-means palette if model file not present.
     """
     try:
         h, w = image_crop.shape[:2]
@@ -63,7 +53,7 @@ def detect_color_hsv(image_crop):
             idx = logits.argmax(1).item()
             return _COLOR_CLASSES[idx].capitalize()
 
-        # ── Fallback: LAB k-means ──────────────────────────────────────
+        # Fallback: LAB k-means palette
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB).astype(np.float32)
         V, S = hsv[:, :, 2], hsv[:, :, 1]
@@ -84,141 +74,3 @@ def detect_color_hsv(image_crop):
 
     except Exception:
         return "Unknown"
-
-
-# -------------------------------------------------------------------
-# BRAND DETECTION — EfficientNet-B0 fine-tuned on Stanford Cars
-# ~20ms on CPU vs ~3000ms for CLIP large
-# -------------------------------------------------------------------
-class FastVehicleDetector:
-    def __init__(self):
-        """
-        Production-grade vehicle detector.
-        - YOLO11n for detection (same as CLIP pipeline)
-        - HSV for color (~1ms, no model)
-        - EfficientNet-B0 via HuggingFace pipeline for brand (~50-100ms CPU)
-        """
-        # Main detector
-        self.base_detector = YOLO(os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "yolo11n.pt"))
-
-        # ViT fine-tuned on car makes & models (300+ classes, ~84% top-1 accuracy)
-        # Returns clean labels like "BMW 3 Series", "Range Rover Sport", "Audi Q7"
-        self.brand_classifier = pipeline(
-            "image-classification",
-            model="dima806/car_models_image_detection",
-        )
-
-    def _to_pil(self, image_crop):
-        """Convert BGR numpy array to RGB PIL image."""
-        return Image.fromarray(cv2.cvtColor(image_crop, cv2.COLOR_BGR2RGB))
-
-    def _format_label(self, label):
-        """
-        Extract brand only from labels like 'BMW 3 Series' -> 'BMW',
-        'Range Rover Sport' -> 'Range Rover', 'Mercedes-Benz C-Class' -> 'Mercedes-Benz'.
-        """
-        two_word_brands = [
-            "Range Rover", "Land Rover", "Mercedes-Benz", "Alfa Romeo",
-            "Aston Martin", "Rolls-Royce",
-        ]
-        for brand in two_word_brands:
-            if label.startswith(brand):
-                return brand
-        return label.split()[0] if label else label
-
-    def classify(self, image_crop):
-        """
-        Run fast color + brand classification on a vehicle crop.
-        Returns: (color, brand, full_label, elapsed_ms)
-        """
-        t0 = time.time()
-
-        # Color — pure HSV, no model
-        color = detect_color_hsv(image_crop)
-
-        # Brand — ViT car model classifier
-        try:
-            pil_img = self._to_pil(image_crop)
-            results = self.brand_classifier(pil_img, top_k=3)
-            brand = self._format_label(results[0]['label'])
-            top3_str = ", ".join(
-                f"{self._format_label(r['label'])} ({r['score']:.0%})"
-                for r in results
-            )
-        except Exception as e:
-            brand = "Unknown"
-            top3_str = f"Error: {e}"
-
-        elapsed_ms = (time.time() - t0) * 1000
-        return color, brand, top3_str, elapsed_ms
-
-    def detect_vehicles(self, frame):
-        """
-        Full pipeline: detect → select primary → classify.
-        Returns list of vehicle dicts (same schema as VehicleDetector).
-        """
-        vehicles = []
-        results = self.base_detector(frame, verbose=False)
-
-        if not results or results[0].boxes is None:
-            return vehicles
-
-        result = results[0]
-        boxes = result.boxes.xyxy.cpu().numpy()
-        class_ids = result.boxes.cls.cpu().numpy()
-        confidences = result.boxes.conf.cpu().numpy()
-
-        # Select most-central vehicle — best represents the subject car
-        fh, fw = frame.shape[:2]
-        best_score = -1
-        primary = None
-
-        for box, cls, conf in zip(boxes, class_ids, confidences):
-            if int(cls) in VEHICLE_CLASS_IDS and conf > 0.40:
-                x1, y1, x2, y2 = map(int, box)
-                area = (x2 - x1) * (y2 - y1)
-                # Distance of box centre from frame centre (normalised)
-                cx = ((x1 + x2) / 2) / fw - 0.5
-                cy = ((y1 + y2) / 2) / fh - 0.5
-                dist = (cx ** 2 + cy ** 2) ** 0.5          # 0 = perfect centre
-                # Score: large + central wins; centrality weighted more
-                score = (area / (fw * fh)) - 1.5 * dist
-                if score > best_score:
-                    best_score = score
-                    primary = {
-                        'coords': (x1, y1, x2, y2),
-                        'crop': frame[y1:y2, x1:x2],
-                        'confidence': float(conf)
-                    }
-
-        if primary and primary['crop'].size > 0:
-            color, brand, top3_str, elapsed_ms = self.classify(primary['crop'])
-            x1, y1, x2, y2 = primary['coords']
-            vehicles.append({
-                'bbox': (x1, y1, x2, y2),
-                'color': color,
-                'make_model': brand,
-                'top3_brands': top3_str,
-                'confidence': primary['confidence'],
-                'elapsed_ms': elapsed_ms,
-                'track_id': None,
-                'is_closest': True
-            })
-
-        return vehicles
-
-    def draw_vehicles(self, frame, vehicles):
-        """Draw detection overlay — same style as VehicleDetector."""
-        img = frame.copy()
-        for vehicle in vehicles:
-            x1, y1, x2, y2 = vehicle['bbox']
-            elapsed = vehicle.get('elapsed_ms', 0)
-
-            hud_label = f"{vehicle['color']} {vehicle['make_model']} ({elapsed:.0f}ms)"
-
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 200, 255), 4)
-            text_width = len(hud_label) * 13
-            cv2.rectangle(img, (x1, y1 - 35), (x1 + text_width, y1), (0, 200, 255), -1)
-            cv2.putText(img, hud_label, (x1 + 5, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
-        return img
