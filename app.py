@@ -100,8 +100,10 @@ def process_plates(image_array, alpr):
         conf = r.ocr.confidence if r.ocr else 0.0
         if conf is None: conf = 0.0
         elif isinstance(conf, list): conf = conf[0] if conf else 0.0
-        out.append({"plate": r.ocr.text if r.ocr else "UNKNOWN", "confidence": float(conf),
-                    "bbox": r.bbox if hasattr(r, "bbox") else None})
+        bb = r.detection.bounding_box if r.detection else None
+        bbox = (bb.x1, bb.y1, bb.x2, bb.y2) if bb else None
+        out.append({"plate": r.ocr.text if r.ocr else "UNKNOWN",
+                    "confidence": float(conf), "bbox": bbox})
     return out
 
 
@@ -133,7 +135,7 @@ def match_plate_to_vehicle(plate_results, vehicle):
     return best
 
 
-def draw_annotations(image_rgb, plate_results, vehicle):
+def draw_annotations(image_rgb, plate_results, vehicle, matched_plate=None):
     img = image_rgb.copy()
     if vehicle:
         x1, y1, x2, y2 = vehicle["bbox"]
@@ -142,10 +144,13 @@ def draw_annotations(image_rgb, plate_results, vehicle):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 0), 2)
     for p in plate_results:
         if p["bbox"] is not None:
-            x1, y1, x2, y2 = p["bbox"]
-            cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)), (255, 100, 0), 3)
-            cv2.putText(img, p["plate"], (int(x1), max(int(y1) - 10, 20)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 100, 0), 2)
+            x1, y1, x2, y2 = [int(v) for v in p["bbox"]]
+            # Highlight matched plate in green, others in orange
+            is_matched = matched_plate and p["plate"] == matched_plate["plate"]
+            colour = (0, 200, 0) if is_matched else (255, 140, 0)
+            cv2.rectangle(img, (x1, y1), (x2, y2), colour, 3)
+            cv2.putText(img, p["plate"], (x1, max(y1 - 10, 20)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, colour, 2)
     return img
 
 
@@ -210,7 +215,7 @@ def main():
             # Match closest plate to the primary vehicle
             matched_plate = match_plate_to_vehicle(plate_results, vehicle)
 
-            annotated = draw_annotations(image_array, plate_results, vehicle)
+            annotated = draw_annotations(image_array, plate_results, vehicle, matched_plate)
             with col_out:
                 st.image(annotated, caption="Results", use_column_width=True)
 
