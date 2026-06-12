@@ -105,6 +105,34 @@ def process_plates(image_array, alpr):
     return out
 
 
+def match_plate_to_vehicle(plate_results, vehicle):
+    """Return the plate whose bbox overlaps or is nearest to the primary vehicle bbox."""
+    if not plate_results or vehicle is None:
+        return None
+    vx1, vy1, vx2, vy2 = vehicle["bbox"]
+
+    best, best_score = None, -1
+    for p in plate_results:
+        if p["bbox"] is None:
+            continue
+        px1, py1, px2, py2 = [int(v) for v in p["bbox"]]
+        # Overlap area
+        ox = max(0, min(px2, vx2) - max(px1, vx1))
+        oy = max(0, min(py2, vy2) - max(py1, vy1))
+        overlap = ox * oy
+        if overlap > 0:
+            return p  # plate is inside vehicle box — definite match
+        # Fallback: closest plate by centre distance
+        pcx, pcy = (px1 + px2) / 2, (py1 + py2) / 2
+        vcx, vcy = (vx1 + vx2) / 2, (vy1 + vy2) / 2
+        dist = ((pcx - vcx) ** 2 + (pcy - vcy) ** 2) ** 0.5
+        score = -dist
+        if score > best_score:
+            best_score = score
+            best = p
+    return best
+
+
 def draw_annotations(image_rgb, plate_results, vehicle):
     img = image_rgb.copy()
     if vehicle:
@@ -167,7 +195,7 @@ def main():
 
         if run_plates or run_vehicle or run_both:
             image_bgr = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
-            plate_results, vehicle = [], None
+            plate_results, vehicle, elapsed = [], None, 0.0
 
             if run_plates or run_both:
                 with st.spinner("Detecting licence plates..."):
@@ -178,6 +206,9 @@ def main():
                     t0 = time.time()
                     vehicle = run_vehicle_detection(image_bgr, jordo_model, class_mapping, detector)
                     elapsed = (time.time() - t0) * 1000
+
+            # Match closest plate to the primary vehicle
+            matched_plate = match_plate_to_vehicle(plate_results, vehicle)
 
             annotated = draw_annotations(image_array, plate_results, vehicle)
             with col_out:
@@ -203,7 +234,10 @@ def main():
 
             with res_cols[2]:
                 st.markdown("### 🔢 Licence Plate")
-                if plate_results:
+                if matched_plate:
+                    st.success(f"**{matched_plate['plate']}**")
+                    st.caption(f"Confidence: {matched_plate['confidence']:.1%}  ·  matched to primary vehicle")
+                elif plate_results:
                     for p in plate_results:
                         st.success(f"**{p['plate']}**")
                         st.caption(f"Confidence: {p['confidence']:.1%}")
