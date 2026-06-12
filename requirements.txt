@@ -5,9 +5,7 @@ Pillow
 numpy
 onnxruntime
 ultralytics>=8.0.0
-transformers>=4.40.0
 torch
 torchvision
 timm
 huggingface_hub
-einops
