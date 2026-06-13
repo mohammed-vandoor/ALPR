@@ -289,7 +289,7 @@ def main():
     cap.release()
     if ret:
         frame_placeholder.image(cv2.cvtColor(preview_frame, cv2.COLOR_BGR2RGB),
-                                 caption=f"Preview @ {seek_sec}s", use_column_width=True)
+                                 caption=f"Preview @ {seek_sec}s", use_container_width=True)
 
     # ── Controls ─────────────────────────────────────────────────────
     btn_col1, btn_col2 = st.columns(2)
@@ -319,7 +319,7 @@ def main():
             })
             elapsed = (time.time() - t0) * 1000
 
-        frame_placeholder.image(annotated, caption=f"Result @ {seek_sec}s", use_column_width=True)
+        frame_placeholder.image(annotated, caption=f"Result @ {seek_sec}s", use_container_width=True)
 
         with result_placeholder.container():
             st.markdown(f"**⏱ Processed in {elapsed:.0f} ms**")
@@ -492,7 +492,7 @@ def main():
             # Update annotated frame every 10th frame to reduce UI thrashing
             if frame_idx % 10 == 0:
                 annotated = draw_tracked(frame_rgb, tracks, last_plate, track_store)
-                frame_display.image(annotated, caption=f"@ {timestamp_sec:.0f}s", use_column_width=True)
+                frame_display.image(annotated, caption=f"@ {timestamp_sec:.0f}s", use_container_width=True)
 
         cap.release()
         progress.progress(1.0)
