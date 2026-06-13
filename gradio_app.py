@@ -10,7 +10,7 @@ from torchvision import transforms
 from ultralytics import YOLO
 from transformers import CLIPProcessor, CLIPModel
 from huggingface_hub import hf_hub_download
-from fast_vehicle_classifier import detect_color_hsv
+from fast_vehicle_classifier import detect_color_hsv, detect_color_with_conf
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 VEHICLE_CLASS_IDS = [2, 5, 7]
@@ -55,7 +55,7 @@ print("All models loaded.")
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 def classify_crop(crop_bgr):
-    color = detect_color_hsv(crop_bgr)
+    color, color_conf = detect_color_with_conf(crop_bgr)
     pil   = Image.fromarray(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB))
     img_inputs = _clip_processor(images=pil, return_tensors="pt").to(DEVICE)
     with torch.no_grad():
@@ -66,7 +66,7 @@ def classify_crop(crop_bgr):
         probs     = torch.softmax(logits[0], dim=0)
     best_idx   = probs.argmax().item()
     brand_conf = probs[best_idx].item()
-    return color, CAR_BRANDS[best_idx], brand_conf
+    return color, color_conf, CAR_BRANDS[best_idx], brand_conf
 
 
 def track_vehicles(frame_bgr):
@@ -192,7 +192,7 @@ def process_video(video_path):
             if track_classify_count[tid] % CLASSIFY_EVERY_N != 1:
                 continue
 
-            color, brand, brand_conf = classify_crop(crop)
+            color, color_conf, brand, brand_conf = classify_crop(crop)
             did_classify = True
 
             matched = match_plate(last_plate, t["bbox"])
@@ -202,8 +202,17 @@ def process_video(video_path):
 
             row_count += 1
             timestamp = frame_idx / fps
-            log_rows.append([row_count, f"{timestamp:.0f}s", tid,
-                              color, brand, f"{brand_conf:.0%}", plate_text])
+            mins = int(timestamp) // 60
+            secs = int(timestamp) % 60
+            log_rows.append([
+                tid,
+                plate_text,
+                color,
+                f"{color_conf:.0%}",
+                brand,
+                f"{brand_conf:.0%}",
+                f"{mins:02d}:{secs:02d}",
+            ])
 
         # Yield annotated frame + updated table
         if frame_idx % 5 == 0 or did_classify:
@@ -233,8 +242,8 @@ with gr.Blocks(title="ALPR — Vehicle Identification", theme=gr.themes.Soft()) 
             frame_out = gr.Image(label="Live Detection Feed", streaming=True)
         with gr.Column(scale=2):
             table_out = gr.Dataframe(
-                headers=["#", "Time", "Track ID", "Colour", "Brand", "Brand Conf", "Plate"],
-                label="Predictions",
+                headers=["Vehicle ID", "Plate", "Colour", "Colour Conf", "Brand", "Brand Conf", "Time"],
+                label="Detections",
                 wrap=True,
             )
 

@@ -55,18 +55,27 @@ def detect_color_hsv(image_crop):
     Car colour detection using trained EfficientNet-B0 (~5ms).
     Returns 'Unknown' if model is not loaded.
     """
+    color, _ = detect_color_with_conf(image_crop)
+    return color
+
+
+def detect_color_with_conf(image_crop):
+    """
+    Car colour detection. Returns (color_name, confidence_float).
+    """
     try:
         h, w = image_crop.shape[:2]
         roi = image_crop[int(h*0.05):int(h*0.70), int(w*0.10):int(w*0.90)]
 
         if _COLOR_MODEL is None:
-            return "Unknown"
+            return "Unknown", 0.0
 
         pil = Image.fromarray(cv2.cvtColor(roi, cv2.COLOR_BGR2RGB))
         with torch.inference_mode():
             logits = _COLOR_MODEL(_COLOR_TFM(pil).unsqueeze(0).to(_DEVICE))
-        idx = logits.argmax(1).item()
-        return _COLOR_CLASSES[idx].capitalize()
+        probs = torch.softmax(logits, dim=1)[0]
+        idx   = probs.argmax().item()
+        return _COLOR_CLASSES[idx].capitalize(), probs[idx].item()
 
     except Exception:
-        return "Unknown"
+        return "Unknown", 0.0
