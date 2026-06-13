@@ -1,3 +1,13 @@
+---
+title: ALPR Vehicle Identification
+emoji: 🚗
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # 🚗 ALPR — Automatic Licence Plate Recognition & Vehicle Identification
 
 A real-time system that identifies vehicles from CCTV footage or uploaded images.  
