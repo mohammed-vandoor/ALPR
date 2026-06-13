@@ -12,3 +12,5 @@ huggingface_hub
 matplotlib
 scipy
 polars
+pyarrow
+pandas
