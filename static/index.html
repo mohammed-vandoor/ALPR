@@ -245,16 +245,13 @@
 
 <script>
 const BASE = window.location.origin;
-let ws = null;
-let pollInterval = null;
-let lastRowCount = 0;
+let pollInterval  = null;
+let frameInterval = null;
+let lastRowCount  = 0;
 
-// Fetch device info
-fetch(BASE + '/log').then(r => r.json()).then(() => {
-  document.getElementById('device-badge').textContent = 'GPU Ready';
-}).catch(() => {
+fetch(BASE + '/status').then(r => r.json()).then(() => {
   document.getElementById('device-badge').textContent = 'Server Ready';
-});
+}).catch(() => {});
 
 function confClass(s) {
   const v = parseFloat(s);
@@ -265,35 +262,32 @@ function confClass(s) {
 
 function colorBadge(color) {
   const map = {
-    black:'#111 color:#aaa', white:'#f5f5f5 color:#333',
-    silver:'#64748b color:#e2e8f0', gray:'#374151 color:#d1d5db',
-    red:'#7f1d1d color:#fca5a5', blue:'#1e3a5f color:#93c5fd',
-    green:'#14532d color:#86efac', yellow:'#78350f color:#fde68a',
-    orange:'#7c2d12 color:#fdba74', brown:'#451a03 color:#d97706',
+    black:'#111111;color:#aaaaaa', white:'#f5f5f5;color:#333333',
+    silver:'#64748b;color:#e2e8f0', grey:'#374151;color:#d1d5db',
+    gray:'#374151;color:#d1d5db', red:'#7f1d1d;color:#fca5a5',
+    blue:'#1e3a5f;color:#93c5fd', green:'#14532d;color:#86efac',
+    yellow:'#78350f;color:#fde68a', orange:'#7c2d12;color:#fdba74',
+    brown:'#451a03;color:#d97706',
   };
   const key = (color||'').toLowerCase();
-  const style = map[key] || 'background:#1f2937;color:#9ca3af';
-  const parts = style.split(' ');
-  return `<span class="badge" style="background:${parts[0].split(':')[1]};${parts[1]}">${color||'?'}</span>`;
+  const style = map[key] || '#1f2937;color:#9ca3af';
+  const [bg, fg] = style.split(';');
+  return `<span class="badge" style="background:${bg};${fg}">${color||'?'}</span>`;
 }
 
 function appendRows(rows) {
   const tbody = document.getElementById('table-body');
   const empty = document.getElementById('empty-row');
   if (empty) empty.remove();
-
   for (let i = lastRowCount; i < rows.length; i++) {
     const r = rows[i];
-    const conf = parseFloat(r.brand_conf || '0');
-    const confPct = Math.round(conf * 100);
-
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><span class="badge badge-gray">#${r.id}</span></td>
       <td>${r.plate === '—' ? '<span style="color:#555">—</span>'
             : `<span class="badge badge-orange">${r.plate}</span>`}</td>
-      <td>${colorBadge(r.color)} <span class="conf-pill ${confClass(r.color_conf||'0%')}">${r.color_conf||'?'}</span></td>
-      <td><span class="badge badge-blue">${r.brand||'?'}</span> <span class="conf-pill ${confClass(r.brand_conf||'0%')}">${r.brand_conf||'?'}</span></td>
+      <td>${colorBadge(r.color)} <span class="conf-pill ${confClass(r.color_conf||'0')}">${r.color_conf||'?'}</span></td>
+      <td><span class="badge badge-blue">${r.brand||'?'}</span> <span class="conf-pill ${confClass(r.brand_conf||'0')}">${r.brand_conf||'?'}</span></td>
       <td style="color:#666;font-size:0.78rem">${r.time||''}</td>
     `;
     tbody.appendChild(tr);
@@ -303,12 +297,29 @@ function appendRows(rows) {
   document.getElementById('row-count').textContent = rows.length + ' row' + (rows.length !== 1 ? 's' : '');
 }
 
-function pollLog() {
-  fetch(BASE + '/log').then(r => r.json()).then(data => {
-    if (data.rows && data.rows.length > lastRowCount) {
-      appendRows(data.rows);
+function pollStatus() {
+  fetch(BASE + '/status').then(r => r.json()).then(data => {
+    if (data.rows && data.rows.length > lastRowCount) appendRows(data.rows);
+    if (data.progress !== undefined) {
+      document.getElementById('progress-fg').style.width = data.progress + '%';
+      document.getElementById('status-text').textContent =
+        data.done ? `✅ Done — ${data.rows.length} detection(s)`
+                  : `Processing… ${data.progress}%  ·  ${data.rows.length} detection(s)`;
     }
+    if (data.done) stopPolling();
   }).catch(() => {});
+}
+
+function refreshFrame() {
+  // Add timestamp to bust cache — browser fetches new JPEG each tick
+  document.getElementById('video-feed').src = BASE + '/frame?t=' + Date.now();
+}
+
+function stopPolling() {
+  if (pollInterval)  { clearInterval(pollInterval);  pollInterval  = null; }
+  if (frameInterval) { clearInterval(frameInterval); frameInterval = null; }
+  document.getElementById('run-btn').disabled = false;
+  document.getElementById('run-btn').textContent = '▶ Process Video';
 }
 
 document.getElementById('run-btn').addEventListener('click', async () => {
@@ -319,78 +330,42 @@ document.getElementById('run-btn').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = 'Uploading…';
 
-  // Reset table
+  // Reset UI
   lastRowCount = 0;
-  document.getElementById('table-body').innerHTML = '<tr><td colspan="5" id="empty-row">No detections yet</td></tr>';
+  document.getElementById('table-body').innerHTML =
+    '<tr><td colspan="5" id="empty-row">No detections yet</td></tr>';
   document.getElementById('row-count').textContent = '0 rows';
+  document.getElementById('progress-fg').style.width = '0%';
+  document.getElementById('progress-bg').style.display = 'block';
+  document.getElementById('status-text').textContent = 'Uploading…';
 
-  // Upload file
   const form = new FormData();
   form.append('file', fileInput.files[0]);
-  let uploadRes;
+
+  let res;
   try {
-    uploadRes = await fetch(BASE + '/upload', { method: 'POST', body: form });
-    uploadRes = await uploadRes.json();
-  } catch(e) { alert('Upload failed: ' + e); btn.disabled = false; btn.textContent = '▶ Process Video'; return; }
+    res = await fetch(BASE + '/upload', { method: 'POST', body: form });
+    res = await res.json();
+  } catch(e) {
+    alert('Upload failed: ' + e);
+    btn.disabled = false; btn.textContent = '▶ Process Video'; return;
+  }
 
-  if (uploadRes.error) { alert(uploadRes.error); btn.disabled = false; btn.textContent = '▶ Process Video'; return; }
+  if (res.error) { alert(res.error); btn.disabled = false; btn.textContent = '▶ Process Video'; return; }
 
-  // Show progress bar
-  document.getElementById('progress-bg').style.display = 'block';
-  document.getElementById('progress-fg').style.width = '0%';
+  // Show video feed
   document.getElementById('video-feed').style.display = 'block';
   document.getElementById('no-feed-msg').style.display = 'none';
   btn.textContent = 'Processing…';
-  document.getElementById('status-text').textContent = 'Starting…';
+  document.getElementById('status-text').textContent = 'Processing…';
 
-  // Poll log every second
-  if (pollInterval) clearInterval(pollInterval);
-  pollInterval = setInterval(pollLog, 1000);
-
-  // Connect WebSocket
-  const wsUrl = BASE.replace('https://', 'wss://').replace('http://', 'ws://') + '/ws';
-  ws = new WebSocket(wsUrl);
-
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ path: uploadRes.path }));
-  };
-
-  ws.onmessage = (evt) => {
-    const msg = JSON.parse(evt.data);
-    if (msg.error) {
-      alert('Error: ' + msg.error);
-      cleanup();
-      return;
-    }
-    if (msg.frame) {
-      document.getElementById('video-feed').src = 'data:image/jpeg;base64,' + msg.frame;
-    }
-    if (msg.progress !== undefined) {
-      document.getElementById('progress-fg').style.width = msg.progress + '%';
-      document.getElementById('status-text').textContent =
-        `Processing… ${msg.progress}%  ·  ${msg.rows} detection(s)`;
-    }
-    if (msg.done) {
-      document.getElementById('status-text').textContent = `✅ Done — ${msg.rows} detection(s)`;
-      cleanup(false);
-    }
-  };
-
-  ws.onerror = () => { alert('WebSocket error — check server logs.'); cleanup(); };
-  ws.onclose = () => { cleanup(false); };
+  // Poll status (rows + progress) every 800ms
+  if (pollInterval)  clearInterval(pollInterval);
+  if (frameInterval) clearInterval(frameInterval);
+  pollInterval  = setInterval(pollStatus,  800);
+  // Poll latest frame every 300ms — fast enough to look smooth
+  frameInterval = setInterval(refreshFrame, 300);
 });
-
-function cleanup(resetBtn = true) {
-  if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
-  pollLog(); // final poll
-  if (resetBtn) {
-    document.getElementById('run-btn').disabled = false;
-    document.getElementById('run-btn').textContent = '▶ Process Video';
-  } else {
-    document.getElementById('run-btn').disabled = false;
-    document.getElementById('run-btn').textContent = '▶ Process Video';
-  }
-}
 </script>
 </body>
 </html>

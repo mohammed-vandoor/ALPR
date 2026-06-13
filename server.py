@@ -4,13 +4,12 @@ import time
 import torch
 import queue
 import threading
-import asyncio
 import base64
 from typing import List, Dict, Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from PIL import Image
@@ -62,10 +61,12 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
 # ── Shared state (one processing job at a time) ────────────────────────────────
-_job_lock    = threading.Lock()
+_state_lock  = threading.Lock()
 _log_rows: List[Dict[str, Any]] = []
-_log_lock    = threading.Lock()
 _active_job  = False
+_progress    = 0          # 0-100
+_done        = False
+_latest_jpeg = b""        # raw JPEG bytes of latest annotated frame
 
 # ── Helper functions ───────────────────────────────────────────────────────────
 def classify_crop(crop_bgr):
@@ -165,115 +166,65 @@ def draw_frame(frame_rgb, tracks, plate_results, track_store):
     return img
 
 
-def frame_to_jpeg_b64(frame_rgb) -> str:
+def frame_to_jpeg(frame_rgb) -> bytes:
     ok, buf = cv2.imencode(".jpg", cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR),
                            [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-    return base64.b64encode(buf.tobytes()).decode() if ok else ""
+    return buf.tobytes() if ok else b""
 
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    html_path = os.path.join(os.path.dirname(__file__), "static", "index.html")
-    with open(html_path) as f:
-        return f.read()
+def _run_video(video_path: str):
+    """Runs in a background thread. Updates global state polled by browser."""
+    global _active_job, _progress, _done, _latest_jpeg
 
+    cap   = cv2.VideoCapture(video_path)
+    fps   = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    raw_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    scale = min(1.0, MAX_VIDEO_WIDTH / raw_w) if raw_w > MAX_VIDEO_WIDTH else 1.0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
 
-@app.get("/log")
-async def get_log():
-    with _log_lock:
-        return JSONResponse({"rows": list(_log_rows)})
+    track_store   = {}
+    last_plate    = []
+    inner_lock    = threading.Lock()
+    infer_q       = queue.Queue(maxsize=4)
+    stop_evt      = threading.Event()
 
-
-@app.post("/upload")
-async def upload_video(file: UploadFile = File(...)):
-    global _active_job
-    with _job_lock:
-        if _active_job:
-            return JSONResponse({"error": "A video is already being processed."}, status_code=409)
-    tmp_path = f"/tmp/{file.filename}"
-    with open(tmp_path, "wb") as f:
-        f.write(await file.read())
-    return JSONResponse({"path": tmp_path})
-
-
-@app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket):
-    global _active_job
-    await ws.accept()
-
-    try:
-        data = await ws.receive_json()
-        video_path = data.get("path")
-        if not video_path or not os.path.exists(video_path):
-            await ws.send_json({"error": "Invalid video path"})
-            await ws.close()
-            return
-    except Exception:
-        await ws.close()
-        return
-
-    with _job_lock:
-        if _active_job:
-            await ws.send_json({"error": "Busy"})
-            await ws.close()
-            return
-        _active_job = True
-
-    with _log_lock:
-        _log_rows.clear()
-
-    try:
-        cap   = cv2.VideoCapture(video_path)
-        fps   = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        raw_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        scale = min(1.0, MAX_VIDEO_WIDTH / raw_w) if raw_w > MAX_VIDEO_WIDTH else 1.0
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
-
-        track_store   = {}
-        last_plate    = []
-        state_lock    = threading.Lock()
-        infer_q       = queue.Queue(maxsize=4)
-        stop_evt      = threading.Event()
-        row_count_ref = [0]
-
-        def inference_worker():
-            tcc = {}
-            while not stop_evt.is_set():
-                try:
-                    tid, crop, bbox, ts = infer_q.get(timeout=0.5)
-                except queue.Empty:
-                    continue
-                tcc[tid] = tcc.get(tid, 0) + 1
-                if tcc[tid] % CLASSIFY_EVERY_N != 1:
-                    infer_q.task_done()
-                    continue
-                color, color_conf, brand, brand_conf = classify_crop(crop)
-                mins, secs = int(ts) // 60, int(ts) % 60
-                with state_lock:
-                    track_store[tid] = {"color": color, "color_conf": color_conf,
-                                        "brand": brand, "conf": brand_conf}
-                    matched   = match_plate(last_plate, bbox)
-                    plate_txt = matched["plate"] if matched else "—"
-                    row_count_ref[0] += 1
-                    _log_rows.append({
-                        "id":          tid,
-                        "plate":       plate_txt,
-                        "color":       color,
-                        "color_conf":  f"{color_conf:.0%}",
-                        "brand":       brand,
-                        "brand_conf":  f"{brand_conf:.0%}",
-                        "time":        f"{mins:02d}:{secs:02d}",
-                    })
+    def inference_worker():
+        tcc = {}
+        while not stop_evt.is_set():
+            try:
+                tid, crop, bbox, ts = infer_q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            tcc[tid] = tcc.get(tid, 0) + 1
+            if tcc[tid] % CLASSIFY_EVERY_N != 1:
                 infer_q.task_done()
+                continue
+            color, color_conf, brand, brand_conf = classify_crop(crop)
+            mins, secs = int(ts) // 60, int(ts) % 60
+            with inner_lock:
+                track_store[tid] = {"color": color, "color_conf": color_conf,
+                                    "brand": brand, "conf": brand_conf}
+                matched   = match_plate(last_plate, bbox)
+                plate_txt = matched["plate"] if matched else "—"
+            with _state_lock:
+                _log_rows.append({
+                    "id":         tid,
+                    "plate":      plate_txt,
+                    "color":      color,
+                    "color_conf": f"{color_conf:.0%}",
+                    "brand":      brand,
+                    "brand_conf": f"{brand_conf:.0%}",
+                    "time":       f"{mins:02d}:{secs:02d}",
+                })
+            infer_q.task_done()
 
-        worker = threading.Thread(target=inference_worker, daemon=True)
-        worker.start()
+    worker = threading.Thread(target=inference_worker, daemon=True)
+    worker.start()
 
-        frame_idx     = 0
-        plate_counter = 0
-        loop          = asyncio.get_event_loop()
+    frame_idx     = 0
+    plate_counter = 0
 
+    try:
         while True:
             ret, frame = cap.read()
             if not ret:
@@ -290,7 +241,7 @@ async def websocket_endpoint(ws: WebSocket):
             plate_counter += 1
             if plate_counter % PLATE_EVERY_N == 0:
                 new_plates = process_plates(frame_rgb)
-                with state_lock:
+                with inner_lock:
                     if new_plates:
                         last_plate.clear()
                         last_plate.extend(new_plates)
@@ -301,36 +252,79 @@ async def websocket_endpoint(ws: WebSocket):
                 except queue.Full:
                     pass
 
-            # Send annotated frame every 3rd frame as base64 JPEG over WebSocket
-            if frame_idx % 3 == 0:
-                with state_lock:
+            # Update latest JPEG every 2nd frame
+            if frame_idx % 2 == 0:
+                with inner_lock:
                     plates_snap = list(last_plate)
                     store_snap  = dict(track_store)
                 annotated = draw_frame(frame_rgb, tracks, plates_snap, store_snap)
-                b64       = frame_to_jpeg_b64(annotated)
-                progress  = round(frame_idx / total * 100)
-                await ws.send_json({"frame": b64, "progress": progress,
-                                    "rows": len(_log_rows)})
-
+                jpeg = frame_to_jpeg(annotated)
+                with _state_lock:
+                    _latest_jpeg = jpeg
+                    _progress    = min(round(frame_idx / total * 100), 99)
+    finally:
         stop_evt.set()
         worker.join(timeout=5)
         cap.release()
-
-        with state_lock:
-            rows_snap = list(_log_rows)
-        await ws.send_json({"done": True, "rows": len(rows_snap)})
-
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        try:
-            await ws.send_json({"error": str(e)})
-        except Exception:
-            pass
-    finally:
-        with _job_lock:
+        with _state_lock:
             _active_job = False
-        stop_evt.set()
+            _done       = True
+            _progress   = 100
+
+
+# ── Routes ─────────────────────────────────────────────────────────────────────
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    html_path = os.path.join(os.path.dirname(__file__), "static", "index.html")
+    with open(html_path) as f:
+        return f.read()
+
+
+@app.get("/frame")
+async def get_frame():
+    """Returns the latest annotated JPEG frame."""
+    with _state_lock:
+        data = bytes(_latest_jpeg)
+    if not data:
+        return Response(content=b"", media_type="image/jpeg")
+    return Response(content=data, media_type="image/jpeg")
+
+
+@app.get("/status")
+async def get_status():
+    """Returns progress + log rows + done flag."""
+    with _state_lock:
+        return JSONResponse({
+            "progress": _progress,
+            "done":     _done,
+            "active":   _active_job,
+            "rows":     list(_log_rows),
+        })
+
+
+@app.post("/upload")
+async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    global _active_job, _progress, _done, _latest_jpeg
+
+    with _state_lock:
+        if _active_job:
+            return JSONResponse({"error": "A video is already being processed."}, status_code=409)
+        # Reset all state for new upload
+        _active_job  = True
+        _progress    = 0
+        _done        = False
+        _latest_jpeg = b""
+        _log_rows.clear()
+
+    tmp_path = f"/tmp/{file.filename}"
+    with open(tmp_path, "wb") as f:
+        f.write(await file.read())
+
+    # Start processing in background thread (not async — CPU/GPU bound)
+    t = threading.Thread(target=_run_video, args=(tmp_path,), daemon=True)
+    t.start()
+
+    return JSONResponse({"started": True})
 
 
 if __name__ == "__main__":
