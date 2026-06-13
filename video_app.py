@@ -250,9 +250,19 @@ def main():
 
     # ── Video info ────────────────────────────────────────────────────
     cap = cv2.VideoCapture(video_path)
-    fps        = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    fps          = cap.get(cv2.CAP_PROP_FPS) or 25.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    duration   = total_frames / fps
+    # Some codecs return garbage for FRAME_COUNT — fall back to duration property
+    raw_duration = cap.get(cv2.CAP_PROP_POS_MSEC)   # 0 before reading
+    if total_frames > 0:
+        duration = total_frames / fps
+    else:
+        # Seek to end to measure duration
+        cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 1)
+        duration = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+        cap.set(cv2.CAP_PROP_POS_MSEC, 0)
+    duration     = max(duration, 1.0)   # guard against 0
+    total_frames = max(total_frames, int(duration * fps))
     cap.release()
 
     st.markdown(f"**Duration:** {duration/60:.1f} min &nbsp;|&nbsp; **FPS:** {fps:.0f} &nbsp;|&nbsp; **Frames:** {total_frames:,}")
