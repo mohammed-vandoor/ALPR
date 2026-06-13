@@ -2,6 +2,8 @@ import os
 import cv2
 import time
 import torch
+import threading
+import queue
 import gradio as gr
 from PIL import Image
 from collections import Counter
@@ -98,15 +100,16 @@ def track_vehicles(frame_bgr):
 def process_plates(frame_rgb):
     results = []
     try:
-        detections = _alpr.run(frame_rgb)
-        for d in detections:
-            if d.ocr and d.ocr[0].text:
-                bb = d.detection.bounding_box
-                results.append({
-                    "plate": d.ocr[0].text.upper(),
-                    "confidence": d.ocr[0].confidence,
-                    "bbox": (int(bb.x1), int(bb.y1), int(bb.x2), int(bb.y2)),
-                })
+        detections = _alpr.predict(frame_rgb)
+        for r in (detections or []):
+            conf = r.ocr.confidence if r.ocr else 0.0
+            if isinstance(conf, list):
+                conf = conf[0] if conf else 0.0
+            bb   = r.detection.bounding_box if r.detection else None
+            bbox = (int(bb.x1), int(bb.y1), int(bb.x2), int(bb.y2)) if bb else None
+            text = r.ocr.text.upper() if r.ocr and r.ocr.text else None
+            if text and bbox:
+                results.append({"plate": text, "confidence": float(conf), "bbox": bbox})
     except Exception:
         pass
     return results
@@ -155,18 +158,58 @@ def process_video(video_path):
         yield None, []
         return
 
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    cap   = cv2.VideoCapture(video_path)
+    fps   = cap.get(cv2.CAP_PROP_FPS) or 25.0
     raw_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     scale = min(1.0, MAX_VIDEO_WIDTH / raw_w) if raw_w > MAX_VIDEO_WIDTH else 1.0
 
-    frame_idx            = 0
-    plate_counter        = 0
-    last_plate           = []
-    track_store          = {}
-    track_classify_count = {}
-    log_rows             = []
-    row_count            = 0
+    # Shared state updated by inference thread
+    track_store  = {}   # {tid: {color, color_conf, brand, brand_conf}}
+    last_plate   = []
+    log_rows     = []
+    row_count    = 0
+    state_lock   = threading.Lock()
+
+    # Queue: main loop puts (tid, crop, bbox, timestamp) — worker classifies
+    infer_q = queue.Queue(maxsize=4)
+    stop_evt = threading.Event()
+
+    def inference_worker():
+        nonlocal row_count
+        track_classify_count = {}
+        while not stop_evt.is_set():
+            try:
+                tid, crop, bbox, timestamp = infer_q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            track_classify_count[tid] = track_classify_count.get(tid, 0) + 1
+            if track_classify_count[tid] % CLASSIFY_EVERY_N != 1:
+                infer_q.task_done()
+                continue
+
+            color, color_conf, brand, brand_conf = classify_crop(crop)
+            mins = int(timestamp) // 60
+            secs = int(timestamp) % 60
+
+            with state_lock:
+                track_store[tid] = {"color": color, "color_conf": color_conf,
+                                    "brand": brand, "conf": brand_conf}
+                matched   = match_plate(last_plate, bbox)
+                plate_txt = matched["plate"] if matched else "—"
+                row_count += 1
+                log_rows.append([
+                    tid, plate_txt, color, f"{color_conf:.0%}",
+                    brand, f"{brand_conf:.0%}", f"{mins:02d}:{secs:02d}",
+                ])
+            infer_q.task_done()
+
+    worker = threading.Thread(target=inference_worker, daemon=True)
+    worker.start()
+
+    frame_idx     = 0
+    plate_counter = 0
+    last_frame    = None
 
     while True:
         ret, frame = cap.read()
@@ -177,50 +220,42 @@ def process_video(video_path):
         if scale < 1.0:
             frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
 
+        timestamp = frame_idx / fps
         tracks    = track_vehicles(frame)
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         plate_counter += 1
         if plate_counter % PLATE_EVERY_N == 0:
-            last_plate = process_plates(frame_rgb)
+            new_plates = process_plates(frame_rgb)
+            with state_lock:
+                if new_plates:
+                    last_plate.clear()
+                    last_plate.extend(new_plates)
 
-        did_classify = False
+        # Push each track to inference queue (non-blocking — drop if full)
         for t in tracks:
-            tid  = t["track_id"]
-            crop = t["crop"]
-            track_classify_count[tid] = track_classify_count.get(tid, 0) + 1
-            if track_classify_count[tid] % CLASSIFY_EVERY_N != 1:
-                continue
+            try:
+                infer_q.put_nowait((t["track_id"], t["crop"], t["bbox"], timestamp))
+            except queue.Full:
+                pass
 
-            color, color_conf, brand, brand_conf = classify_crop(crop)
-            did_classify = True
+        # Yield every 3rd frame for smooth display — never block on inference
+        if frame_idx % 3 == 0:
+            with state_lock:
+                plates_snap = list(last_plate)
+                store_snap  = dict(track_store)
+                rows_snap   = [r[:] for r in log_rows]
+            annotated  = draw_frame(frame_rgb, tracks, plates_snap, store_snap)
+            last_frame = annotated
+            yield annotated, rows_snap
 
-            matched = match_plate(last_plate, t["bbox"])
-            plate_text = matched["plate"] if matched else "—"
-
-            track_store[tid] = {"color": color, "brand": brand, "conf": brand_conf}
-
-            row_count += 1
-            timestamp = frame_idx / fps
-            mins = int(timestamp) // 60
-            secs = int(timestamp) % 60
-            log_rows.append([
-                tid,
-                plate_text,
-                color,
-                f"{color_conf:.0%}",
-                brand,
-                f"{brand_conf:.0%}",
-                f"{mins:02d}:{secs:02d}",
-            ])
-
-        # Yield annotated frame + updated table
-        if frame_idx % 5 == 0 or did_classify:
-            annotated = draw_frame(frame_rgb, tracks, last_plate, track_store)
-            yield annotated, log_rows
-
+    stop_evt.set()
+    worker.join(timeout=5)
     cap.release()
-    yield annotated if 'annotated' in dir() else None, log_rows
+
+    with state_lock:
+        rows_snap = [r[:] for r in log_rows]
+    yield last_frame, rows_snap
 
 
 # ── Gradio UI ─────────────────────────────────────────────────────────────────
