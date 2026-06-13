@@ -71,21 +71,50 @@ def detect_color_hsv(image_crop):
 
 def detect_color_with_conf(image_crop):
     """
-    Car colour detection. Returns (color_name, confidence_float).
+    Car colour detection using body-region patch voting.
+    Splits the car body into 3 horizontal patches, classifies each,
+    returns the majority colour and its average confidence.
     """
     try:
-        h, w = image_crop.shape[:2]
-        roi = image_crop[int(h*0.05):int(h*0.70), int(w*0.10):int(w*0.90)]
-
         if _COLOR_MODEL is None:
             return "Unknown", 0.0
 
-        pil = Image.fromarray(cv2.cvtColor(roi, cv2.COLOR_BGR2RGB))
-        with torch.inference_mode():
-            logits = _COLOR_MODEL(_COLOR_TFM(pil).unsqueeze(0).to(_DEVICE))
-        probs = torch.softmax(logits, dim=1)[0]
-        idx   = probs.argmax().item()
-        return _COLOR_CLASSES[idx].capitalize(), probs[idx].item()
+        h, w = image_crop.shape[:2]
+        # Body region: top 15%–70% of height, inner 10%–90% of width
+        # (excludes roof glare at top, wheels/ground at bottom)
+        body = image_crop[int(h * 0.15):int(h * 0.70),
+                          int(w * 0.10):int(w * 0.90)]
+        bh, bw = body.shape[:2]
+        if bh < 10 or bw < 10:
+            return "Unknown", 0.0
+
+        # 3 horizontal patches: left / centre / right
+        patches = [
+            body[:, :bw // 3],
+            body[:, bw // 3: 2 * bw // 3],
+            body[:, 2 * bw // 3:],
+        ]
+
+        votes = []
+        for patch in patches:
+            if patch.size == 0:
+                continue
+            pil = Image.fromarray(cv2.cvtColor(patch, cv2.COLOR_BGR2RGB))
+            with torch.inference_mode():
+                logits = _COLOR_MODEL(_COLOR_TFM(pil).unsqueeze(0).to(_DEVICE))
+            probs = torch.softmax(logits, dim=1)[0]
+            idx   = probs.argmax().item()
+            votes.append((_COLOR_CLASSES[idx], probs[idx].item()))
+
+        if not votes:
+            return "Unknown", 0.0
+
+        # Majority vote across patches
+        from collections import Counter
+        counts   = Counter(v[0] for v in votes)
+        best_lbl = counts.most_common(1)[0][0]
+        avg_conf = sum(v[1] for v in votes if v[0] == best_lbl) / counts[best_lbl]
+        return best_lbl.capitalize(), avg_conf
 
     except Exception:
         return "Unknown", 0.0
