@@ -57,6 +57,16 @@ with torch.no_grad():
 
 print("[server] Models loaded.")
 
+# ── Verify multipart is available (required for file upload) ──────────────────
+try:
+    import multipart  # noqa
+    print("[server] python-multipart OK")
+except ImportError:
+    print("[server] WARNING: python-multipart missing — installing now")
+    import subprocess, sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "python-multipart"])
+    print("[server] python-multipart installed")
+
 # ── FastAPI app ────────────────────────────────────────────────────────────────
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
