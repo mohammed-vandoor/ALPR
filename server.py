@@ -47,13 +47,20 @@ _alpr      = ALPR(detector_model="yolo-v9-t-384-license-plate-end2end",
                   ocr_model="cct-s-v1-global-model")
 _detector  = YOLO(YOLO_PATH)
 
-_clip_model     = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(DEVICE).eval()
-_clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-_text_inputs    = _clip_processor(text=_BRAND_PROMPTS, return_tensors="pt", padding=True).to(DEVICE)
-with torch.no_grad():
-    _tf = _clip_model.text_model(**_text_inputs)
-    _tf = _clip_model.text_projection(_tf.pooler_output)
-    _text_feats = (_tf / _tf.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-8)).detach()
+try:
+    _clip_model     = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(DEVICE).eval()
+    _clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+    _text_inputs    = _clip_processor(text=_BRAND_PROMPTS, return_tensors="pt", padding=True).to(DEVICE)
+    with torch.no_grad():
+        _tf = _clip_model.text_model(**_text_inputs)
+        _tf = _clip_model.text_projection(_tf.pooler_output)
+        _text_feats = (_tf / _tf.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-8)).detach()
+    _CLIP_OK = True
+    print("[server] CLIP loaded OK")
+except Exception as e:
+    _clip_model = _clip_processor = _text_feats = None
+    _CLIP_OK = False
+    print(f"[server] WARNING: CLIP failed to load — {e}")
 
 print("[server] Models loaded.")
 
@@ -63,9 +70,10 @@ try:
     print("[server] python-multipart OK")
 except ImportError:
     print("[server] WARNING: python-multipart missing — installing now")
-    import subprocess, sys
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "python-multipart"])
+    import subprocess as _sp, sys as _sys
+    _sp.check_call([_sys.executable, "-m", "pip", "install", "-q", "python-multipart"])
     print("[server] python-multipart installed")
+
 
 # ── FastAPI app ────────────────────────────────────────────────────────────────
 app = FastAPI()
@@ -92,6 +100,8 @@ _latest_jpeg = b""        # raw JPEG bytes of latest annotated frame
 # ── Helper functions ───────────────────────────────────────────────────────────
 def classify_crop(crop_bgr):
     color, color_conf = detect_color_with_conf(crop_bgr)
+    if not _CLIP_OK:
+        return color, color_conf, "Unknown", 0.0
     pil        = Image.fromarray(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB))
     img_inputs = _clip_processor(images=pil, return_tensors="pt").to(DEVICE)
     with torch.no_grad():
@@ -294,6 +304,11 @@ def _run_video(video_path: str):
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
+@app.get("/health")
+async def health():
+    return JSONResponse({"status": "ok", "clip": _CLIP_OK, "device": str(DEVICE)})
+
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
     html_path = os.path.join(os.path.dirname(__file__), "static", "index.html")
