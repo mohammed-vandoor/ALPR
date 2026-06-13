@@ -352,23 +352,19 @@ def main():
         log_placeholder = log_col.empty()
         log_rows        = []
 
-        cap          = cv2.VideoCapture(video_path)
-        frame_idx    = 0
+        cap           = cv2.VideoCapture(video_path)
+        frame_idx     = 0
         plate_counter = 0
-        last_plate   = []
-        vehicle_count = 0
+        last_plate    = []
+        row_count     = 0
         timestamp_sec = 0.0
-        track_classify_count = {}  # { track_id: frame count for classify throttle }
+        track_classify_count = {}
+        track_store   = {}   # { tid: {color, brand, color_conf, brand_conf} } for live overlay
+        track_last    = {}   # { tid: last frame seen }
 
-        # Downscale factor — resize wide videos to MAX_VIDEO_WIDTH for faster YOLO
+        # Downscale factor
         raw_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         scale = min(1.0, MAX_VIDEO_WIDTH / raw_w) if raw_w > MAX_VIDEO_WIDTH else 1.0
-
-        # ── Per-track accumulators  { track_id: {"frames": [...], "last_seen": int} }
-        track_store   = {}   # stores best color/brand so far per track_id for display
-        track_accum   = {}   # { track_id: [(color, brand, plate), ...] }
-        track_last    = {}   # { track_id: frame_idx when last seen }
-        finalised_ids = set()
 
         while True:
             ret, frame = cap.read()
@@ -378,126 +374,70 @@ def main():
             frame_idx    += 1
             timestamp_sec = frame_idx / fps
 
-            if frame_idx % 30 == 0:   # update UI every 30 frames
-                status.text(f"Scanning {timestamp_sec:.0f}s / {duration:.0f}s  —  {vehicle_count} vehicle(s) logged")
+            if frame_idx % 30 == 0:
+                status.text(f"Scanning {timestamp_sec:.0f}s / {duration:.0f}s  —  {row_count} prediction(s) logged")
                 progress.progress(min(frame_idx / total_frames, 1.0))
 
-            # Downscale frame if video is wider than MAX_VIDEO_WIDTH
             if scale < 1.0:
                 frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
 
-            # ── ByteTrack: get all tracked vehicles in this frame ──
-            tracks = track_vehicles(frame, detector)
-
-            # ── Plate detection every N frames ──
-            plate_counter += 1
+            tracks    = track_vehicles(frame, detector)
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            plate_counter += 1
             if plate_counter % PLATE_EVERY_N == 0:
                 last_plate = process_plates(frame_rgb, alpr)
 
-            active_ids = set()
+            did_classify = False
 
             for t in tracks:
                 tid  = t["track_id"]
                 crop = t["crop"]
-                active_ids.add(tid)
                 track_last[tid] = frame_idx
 
-                if tid in finalised_ids:
-                    continue   # already logged this vehicle, skip
-
-                # Throttle classification — only run every CLASSIFY_EVERY_N frames per track
+                # Throttle: classify every CLASSIFY_EVERY_N frames per track
                 track_classify_count[tid] = track_classify_count.get(tid, 0) + 1
-                if track_classify_count[tid] % CLASSIFY_EVERY_N != 1 and tid in track_accum:
-                    continue   # skip inference this frame, use cached best
+                if track_classify_count[tid] % CLASSIFY_EVERY_N != 1:
+                    continue
 
-                # Classify this crop — returns confidence score too
                 color, brand, brand_conf = classify_crop(crop, clip_model, clip_processor, text_feats)
+                did_classify = True
 
-                # Match a plate to this vehicle bbox
                 fake_vehicle = {"bbox": t["bbox"]}
                 matched_plate = match_plate_to_vehicle(last_plate, fake_vehicle)
                 plate_text = matched_plate["plate"] if matched_plate else "—"
 
-                # ── Keep highest-confidence prediction per track ──
-                # First frame seeds the best; every new frame replaces it only if
-                # its brand confidence is strictly higher than what we have so far.
-                if tid not in track_accum:
-                    track_accum[tid] = {"color": color, "brand": brand,
-                                        "brand_conf": brand_conf, "plate": plate_text,
-                                        "frames_seen": 1}
-                else:
-                    track_accum[tid]["frames_seen"] += 1
-                    if brand_conf > track_accum[tid]["brand_conf"]:
-                        track_accum[tid]["color"]      = color
-                        track_accum[tid]["brand"]      = brand
-                        track_accum[tid]["brand_conf"] = brand_conf
-                    # Always update plate if we have a real one
-                    if plate_text != "—":
-                        track_accum[tid]["plate"] = plate_text
-
-                # Keep best label for live display
+                # Update live overlay label for this track
                 track_store[tid] = {
-                    "color": track_accum[tid]["color"],
-                    "brand": track_accum[tid]["brand"],
-                    "conf":  track_accum[tid]["brand_conf"],
+                    "color": color, "brand": brand, "conf": brand_conf,
                 }
 
-                # ── Once we have seen enough frames — lock and log ──
-                if track_accum[tid]["frames_seen"] >= FRAMES_TO_LOCK:
-                    best        = track_accum[tid]
-                    final_color = best["color"]
-                    final_brand = best["brand"]
-                    final_plate = best["plate"]
-                    brand_conf  = best["brand_conf"]
-                    vehicle_count += 1
-                    finalised_ids.add(tid)
+                # ── Log every prediction as its own row ──
+                row_count += 1
+                log_rows.append({
+                    "#":           row_count,
+                    "Time":        f"{timestamp_sec:.0f}s",
+                    "Track ID":    tid,
+                    "Colour":      color,
+                    "Plate":       plate_text,
+                    "Brand":       brand,
+                    "Brand Conf":  f"{brand_conf:.0%}",
+                })
+                log_placeholder.dataframe(log_rows, use_container_width=True)
 
-                    log_rows.append({
-                        "#":          vehicle_count,
-                        "Time":       f"{timestamp_sec:.0f}s",
-                        "Colour":     final_color,
-                        "Brand":      final_brand,
-                        "Brand Conf": f"{brand_conf:.0%}",
-                        "Plate":      final_plate,
-                    })
-                    log_placeholder.dataframe(log_rows, use_container_width=True)
-                    live_status.success(
-                        f"✅ Vehicle {vehicle_count} locked  ·  "
-                        f"🎨 {final_color}  🏷️ {final_brand} ({brand_conf:.0%})  🔢 {final_plate}"
-                    )
-
-            # ── Check for tracks that disappeared — finalise if not yet logged ──
-            gone_ids = [tid for tid, last in track_last.items()
-                        if frame_idx - last > TRACK_LOST_FRAMES and tid not in finalised_ids]
-            for tid in gone_ids:
-                best = track_accum.get(tid)
-                if best and best["frames_seen"] > 0:
-                    final_color = best["color"]
-                    final_brand = best["brand"]
-                    final_plate = best["plate"]
-                    brand_conf  = best["brand_conf"]
-                    vehicle_count += 1
-                    finalised_ids.add(tid)
-                    log_rows.append({
-                        "#":          vehicle_count,
-                        "Time":       f"{timestamp_sec:.0f}s",
-                        "Colour":     final_color,
-                        "Brand":      final_brand,
-                        "Brand Conf": f"{brand_conf:.0%}",
-                        "Plate":      final_plate,
-                    })
-                    log_placeholder.dataframe(log_rows, use_container_width=True)
-
-            # Update annotated frame every 10th frame to reduce UI thrashing
-            if frame_idx % 10 == 0:
+            # ── Update video frame — only when no classification happened this frame
+            # to avoid blocking the display during heavy inference
+            if frame_idx % 5 == 0 and not did_classify:
+                annotated = draw_tracked(frame_rgb, tracks, last_plate, track_store)
+                frame_display.image(annotated, caption=f"@ {timestamp_sec:.0f}s", use_container_width=True)
+            elif frame_idx % 15 == 0:
                 annotated = draw_tracked(frame_rgb, tracks, last_plate, track_store)
                 frame_display.image(annotated, caption=f"@ {timestamp_sec:.0f}s", use_container_width=True)
 
         cap.release()
         progress.progress(1.0)
         log_placeholder.dataframe(log_rows, use_container_width=True)
-        status.success(f"Done — {vehicle_count} vehicle(s) in {duration/60:.1f} min video")
+        status.success(f"Done — {row_count} prediction(s) across {duration/60:.1f} min video")
 
 
 if __name__ == "__main__":
