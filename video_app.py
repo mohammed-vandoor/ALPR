@@ -2,15 +2,14 @@ import os
 import cv2
 import time
 import torch
-import timm
 import streamlit as st
 from collections import deque, Counter
 from fast_alpr import ALPR
 from PIL import Image
 import numpy as np
 from torchvision import transforms
-from huggingface_hub import hf_hub_download
 from ultralytics import YOLO
+from transformers import CLIPProcessor, CLIPModel
 from fast_vehicle_classifier import detect_color_hsv
 
 VEHICLE_CLASS_IDS = [2, 5, 7]
@@ -28,12 +27,16 @@ PLATE_EVERY_N      = 4      # run plate detection every N frames (expensive)
 CLASSIFY_EVERY_N   = 3      # only run brand/colour on every Nth frame per track
 MAX_VIDEO_WIDTH    = 1280   # downscale wide videos to this width before processing
 
-# ── Brand classifier transform (defined once, reused per frame)
-_BRAND_TFM = transforms.Compose([
-    transforms.Resize((380, 380)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
+# ── Car brands CLIP will choose from — edit this list to match your market
+CAR_BRANDS = [
+    "Toyota", "Honda", "Ford", "Chevrolet", "BMW", "Mercedes-Benz", "Volkswagen",
+    "Audi", "Nissan", "Hyundai", "Kia", "Mazda", "Subaru", "Lexus", "Jeep",
+    "Ram", "GMC", "Cadillac", "Volvo", "Porsche", "Land Rover", "Range Rover",
+    "Jaguar", "Mitsubishi", "Suzuki", "Renault", "Peugeot", "Citroën", "Fiat",
+    "Tesla", "Chrysler", "Dodge", "Buick", "Infiniti", "Acura", "Genesis",
+]
+# Pre-build text prompts once
+_BRAND_PROMPTS = [f"a photo of a {b} car" for b in CAR_BRANDS]
 
 
 def most_common(values):
@@ -44,18 +47,20 @@ def most_common(values):
     return Counter(clean).most_common(1)[0][0]
 
 
-def classify_crop(crop_bgr, jordo_model, class_mapping):
-    """Run colour + brand classification on a single vehicle crop.
-    Returns (color, brand, brand_confidence). Runs on GPU if available.
+def classify_crop(crop_bgr, clip_model, clip_processor):
+    """Colour detection + CLIP zero-shot brand classification.
+    Returns (color, brand, brand_confidence).
     """
     color = detect_color_hsv(crop_bgr)
     pil   = Image.fromarray(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB))
-    tensor = _BRAND_TFM(pil).unsqueeze(0).to(DEVICE)
+    inputs = clip_processor(text=_BRAND_PROMPTS, images=pil,
+                            return_tensors="pt", padding=True).to(DEVICE)
     with torch.no_grad():
-        probs = torch.softmax(jordo_model(tensor), dim=1)[0]
-    brand_conf = probs.max().item()
-    idx        = probs.argmax().item()
-    brand      = extract_brand(class_mapping[idx])
+        logits = clip_model(**inputs).logits_per_image[0]
+        probs  = torch.softmax(logits, dim=0)
+    best_idx   = probs.argmax().item()
+    brand_conf = probs[best_idx].item()
+    brand      = CAR_BRANDS[best_idx]
     return color, brand, brand_conf
 
 
@@ -67,14 +72,6 @@ def load_alpr():
     )
 
 
-@st.cache_resource
-def load_jordo23():
-    path = hf_hub_download(repo_id="Jordo23/vehicle-classifier", filename="vehicle_classifier.pth")
-    checkpoint = torch.load(path, map_location=DEVICE, weights_only=False)
-    model = timm.create_model("efficientnet_b4", pretrained=False, num_classes=8949)
-    model.load_state_dict(checkpoint["model_state"])
-    model.to(DEVICE).eval()
-    return model, checkpoint["class_mapping"]
 
 
 @st.cache_resource
@@ -82,12 +79,12 @@ def load_yolo():
     return YOLO(YOLO_PATH)
 
 
-def extract_brand(label):
-    two_word_brands = ["Range Rover", "Land Rover", "Mercedes-Benz", "Alfa Romeo", "Aston Martin", "Rolls-Royce"]
-    for brand in two_word_brands:
-        if label.startswith(brand):
-            return brand
-    return label.split()[0] if label else label
+@st.cache_resource
+def load_clip():
+    """Load CLIP model onto GPU if available."""
+    model     = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(DEVICE).eval()
+    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+    return model, processor
 
 
 def track_vehicles(frame_bgr, detector):
@@ -206,9 +203,9 @@ def main():
     st.title("🎥 Vehicle Identification — Video Mode")
     st.caption("Analyses a video file frame by frame · licence plate · colour · brand")
 
-    alpr        = load_alpr()
-    jordo_model, class_mapping = load_jordo23()
-    detector    = load_yolo()
+    alpr                    = load_alpr()
+    clip_model, clip_processor = load_clip()
+    detector                = load_yolo()
 
     st.sidebar.header("Video Input")
 
@@ -300,7 +297,7 @@ def main():
             vehicle       = None
             matched_plate = None
             if primary_track:
-                color, brand, brand_conf = classify_crop(primary_track["crop"], jordo_model, class_mapping)
+                color, brand, brand_conf = classify_crop(primary_track["crop"], clip_model, clip_processor)
                 vehicle       = {"bbox": primary_track["bbox"], "color": color, "brand": brand,
                                  "confidence": primary_track["confidence"]}
                 matched_plate = match_plate_to_vehicle(plate_results, vehicle)
@@ -402,7 +399,7 @@ def main():
                     continue   # skip inference this frame, use cached best
 
                 # Classify this crop — returns confidence score too
-                color, brand, brand_conf = classify_crop(crop, jordo_model, class_mapping)
+                color, brand, brand_conf = classify_crop(crop, clip_model, clip_processor)
 
                 # Match a plate to this vehicle bbox
                 fake_vehicle = {"bbox": t["bbox"]}
