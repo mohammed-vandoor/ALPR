@@ -330,14 +330,16 @@ def main():
     # ── Process full video with ByteTrack ──────────────────────────────
     if run_video:
         st.markdown("---")
-        st.subheader("📋 Vehicle Log")
+        progress    = st.progress(0)
+        status      = st.empty()
 
-        log_placeholder = st.empty()
+        vid_col, log_col = st.columns([3, 2])
+        frame_display = vid_col.empty()
+        live_status   = vid_col.empty()
+
+        log_col.subheader("📋 Vehicle Log")
+        log_placeholder = log_col.empty()
         log_rows        = []
-        progress        = st.progress(0)
-        status          = st.empty()
-        frame_display   = st.empty()
-        live_status     = st.empty()
 
         cap          = cv2.VideoCapture(video_path)
         frame_idx    = 0
