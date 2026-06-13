@@ -7,6 +7,7 @@ import torch.nn as nn
 from torchvision import transforms, models
 from PIL import Image
 
+_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 _COLOR_MODEL = None
 _COLOR_CLASSES = None
 _COLOR_TFM = transforms.Compose([
@@ -42,7 +43,7 @@ if os.path.exists(_MODEL_PATH) and os.path.exists(_CLASSES_PATH):
             _m = models.mobilenet_v3_small(weights=None)
         _m.classifier[-1] = nn.Linear(_m.classifier[-1].in_features, len(_COLOR_CLASSES))
         _m.load_state_dict(_ckpt["model_state"])
-        _m.eval()
+        _m.to(_DEVICE).eval()
         _COLOR_MODEL = _m
         print(f"Loaded colour classifier ({len(_COLOR_CLASSES)} classes)")
     except Exception as e:
@@ -63,7 +64,7 @@ def detect_color_hsv(image_crop):
 
         pil = Image.fromarray(cv2.cvtColor(roi, cv2.COLOR_BGR2RGB))
         with torch.inference_mode():
-            logits = _COLOR_MODEL(_COLOR_TFM(pil).unsqueeze(0))
+            logits = _COLOR_MODEL(_COLOR_TFM(pil).unsqueeze(0).to(_DEVICE))
         idx = logits.argmax(1).item()
         return _COLOR_CLASSES[idx].capitalize()
 

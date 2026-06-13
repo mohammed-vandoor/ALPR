@@ -16,12 +16,17 @@ from fast_vehicle_classifier import detect_color_hsv
 VEHICLE_CLASS_IDS = [2, 5, 7]
 YOLO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "yolo11n.pt")
 
+# ── Device: use CUDA (Colab GPU) if available, else CPU
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # ── Tracking settings
-MIN_VEHICLE_AREA  = 0.04   # vehicle bbox must be >= 4% of frame area to classify
-MIN_CONFIDENCE    = 0.55   # minimum YOLO box confidence to count a frame
-FRAMES_TO_LOCK    = 6      # good frames needed before finalising a vehicle result
-TRACK_LOST_FRAMES = 10     # frames without a track before we consider it gone
-PLATE_EVERY_N     = 4      # run plate detection every N frames (expensive)
+MIN_VEHICLE_AREA   = 0.04   # vehicle bbox must be >= 4% of frame area to classify
+MIN_CONFIDENCE     = 0.55   # minimum YOLO box confidence to count a frame
+FRAMES_TO_LOCK     = 6      # good frames needed before finalising a vehicle result
+TRACK_LOST_FRAMES  = 10     # frames without a track before we consider it gone
+PLATE_EVERY_N      = 4      # run plate detection every N frames (expensive)
+CLASSIFY_EVERY_N   = 3      # only run brand/colour on every Nth frame per track
+MAX_VIDEO_WIDTH    = 1280   # downscale wide videos to this width before processing
 
 # ── Brand classifier transform (defined once, reused per frame)
 _BRAND_TFM = transforms.Compose([
@@ -41,12 +46,13 @@ def most_common(values):
 
 def classify_crop(crop_bgr, jordo_model, class_mapping):
     """Run colour + brand classification on a single vehicle crop.
-    Returns (color, brand, brand_confidence).
+    Returns (color, brand, brand_confidence). Runs on GPU if available.
     """
     color = detect_color_hsv(crop_bgr)
     pil   = Image.fromarray(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB))
+    tensor = _BRAND_TFM(pil).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
-        probs = torch.softmax(jordo_model(_BRAND_TFM(pil).unsqueeze(0)), dim=1)[0]
+        probs = torch.softmax(jordo_model(tensor), dim=1)[0]
     brand_conf = probs.max().item()
     idx        = probs.argmax().item()
     brand      = extract_brand(class_mapping[idx])
@@ -64,10 +70,10 @@ def load_alpr():
 @st.cache_resource
 def load_jordo23():
     path = hf_hub_download(repo_id="Jordo23/vehicle-classifier", filename="vehicle_classifier.pth")
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    checkpoint = torch.load(path, map_location=DEVICE, weights_only=False)
     model = timm.create_model("efficientnet_b4", pretrained=False, num_classes=8949)
     model.load_state_dict(checkpoint["model_state"])
-    model.eval()
+    model.to(DEVICE).eval()
     return model, checkpoint["class_mapping"]
 
 
@@ -332,6 +338,11 @@ def main():
         last_plate   = []
         vehicle_count = 0
         timestamp_sec = 0.0
+        track_classify_count = {}  # { track_id: frame count for classify throttle }
+
+        # Downscale factor — resize wide videos to MAX_VIDEO_WIDTH for faster YOLO
+        raw_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        scale = min(1.0, MAX_VIDEO_WIDTH / raw_w) if raw_w > MAX_VIDEO_WIDTH else 1.0
 
         # ── Per-track accumulators  { track_id: {"frames": [...], "last_seen": int} }
         track_store   = {}   # stores best color/brand so far per track_id for display
@@ -350,6 +361,10 @@ def main():
             if frame_idx % 30 == 0:   # update UI every 30 frames
                 status.text(f"Scanning {timestamp_sec:.0f}s / {duration:.0f}s  —  {vehicle_count} vehicle(s) logged")
                 progress.progress(min(frame_idx / total_frames, 1.0))
+
+            # Downscale frame if video is wider than MAX_VIDEO_WIDTH
+            if scale < 1.0:
+                frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
 
             # ── ByteTrack: get all tracked vehicles in this frame ──
             tracks = track_vehicles(frame, detector)
@@ -370,6 +385,11 @@ def main():
 
                 if tid in finalised_ids:
                     continue   # already logged this vehicle, skip
+
+                # Throttle classification — only run every CLASSIFY_EVERY_N frames per track
+                track_classify_count[tid] = track_classify_count.get(tid, 0) + 1
+                if track_classify_count[tid] % CLASSIFY_EVERY_N != 1 and tid in track_accum:
+                    continue   # skip inference this frame, use cached best
 
                 # Classify this crop — returns confidence score too
                 color, brand, brand_conf = classify_crop(crop, jordo_model, class_mapping)
