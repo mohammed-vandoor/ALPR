@@ -55,7 +55,8 @@ def classify_crop(crop_bgr, clip_model, clip_processor, text_feats):
     pil   = Image.fromarray(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB))
     img_inputs = clip_processor(images=pil, return_tensors="pt").to(DEVICE)
     with torch.no_grad():
-        img_feats = clip_model.get_image_features(**img_inputs)
+        img_out   = clip_model.vision_model(**img_inputs)
+        img_feats = clip_model.visual_projection(img_out.pooler_output)
         img_feats = img_feats / img_feats.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-8)
         logits    = (img_feats @ text_feats.T) * clip_model.logit_scale.exp()
         probs     = torch.softmax(logits[0], dim=0)
@@ -90,7 +91,8 @@ def load_clip():
     # Pre-compute normalised text features for all brand prompts
     text_inputs = processor(text=_BRAND_PROMPTS, return_tensors="pt", padding=True).to(DEVICE)
     with torch.no_grad():
-        text_feats = model.get_text_features(**text_inputs)
+        outputs    = model.text_model(**text_inputs)
+        text_feats = model.text_projection(outputs.pooler_output)
         norms      = text_feats.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-8)
         text_feats = (text_feats / norms).detach()
     return model, processor, text_feats
