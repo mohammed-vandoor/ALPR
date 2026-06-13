@@ -47,17 +47,18 @@ def most_common(values):
     return Counter(clean).most_common(1)[0][0]
 
 
-def classify_crop(crop_bgr, clip_model, clip_processor):
+def classify_crop(crop_bgr, clip_model, clip_processor, text_feats):
     """Colour detection + CLIP zero-shot brand classification.
-    Returns (color, brand, brand_confidence).
+    Uses pre-encoded text features for speed. Returns (color, brand, brand_confidence).
     """
     color = detect_color_hsv(crop_bgr)
     pil   = Image.fromarray(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB))
-    inputs = clip_processor(text=_BRAND_PROMPTS, images=pil,
-                            return_tensors="pt", padding=True).to(DEVICE)
+    img_inputs = clip_processor(images=pil, return_tensors="pt").to(DEVICE)
     with torch.no_grad():
-        logits = clip_model(**inputs).logits_per_image[0]
-        probs  = torch.softmax(logits, dim=0)
+        img_feats = clip_model.get_image_features(**img_inputs)
+        img_feats = img_feats / img_feats.norm(dim=-1, keepdim=True)
+        logits    = (img_feats @ text_feats.T) * clip_model.logit_scale.exp()
+        probs     = torch.softmax(logits[0], dim=0)
     best_idx   = probs.argmax().item()
     brand_conf = probs[best_idx].item()
     brand      = CAR_BRANDS[best_idx]
@@ -81,10 +82,17 @@ def load_yolo():
 
 @st.cache_resource
 def load_clip():
-    """Load CLIP model onto GPU if available."""
+    """Load CLIP model onto GPU. Pre-encode text embeddings once so per-frame
+    inference only needs to encode the image (much faster).
+    """
     model     = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(DEVICE).eval()
     processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-    return model, processor
+    # Pre-compute normalised text features for all brand prompts
+    text_inputs = processor(text=_BRAND_PROMPTS, return_tensors="pt", padding=True).to(DEVICE)
+    with torch.no_grad():
+        text_feats = model.get_text_features(**text_inputs)
+        text_feats = text_feats / text_feats.norm(dim=-1, keepdim=True)  # normalise
+    return model, processor, text_feats
 
 
 def track_vehicles(frame_bgr, detector):
@@ -203,9 +211,9 @@ def main():
     st.title("🎥 Vehicle Identification — Video Mode")
     st.caption("Analyses a video file frame by frame · licence plate · colour · brand")
 
-    alpr                    = load_alpr()
-    clip_model, clip_processor = load_clip()
-    detector                = load_yolo()
+    alpr                             = load_alpr()
+    clip_model, clip_processor, text_feats = load_clip()
+    detector                         = load_yolo()
 
     st.sidebar.header("Video Input")
 
@@ -297,7 +305,7 @@ def main():
             vehicle       = None
             matched_plate = None
             if primary_track:
-                color, brand, brand_conf = classify_crop(primary_track["crop"], clip_model, clip_processor)
+                color, brand, brand_conf = classify_crop(primary_track["crop"], clip_model, clip_processor, text_feats)
                 vehicle       = {"bbox": primary_track["bbox"], "color": color, "brand": brand,
                                  "confidence": primary_track["confidence"]}
                 matched_plate = match_plate_to_vehicle(plate_results, vehicle)
@@ -401,7 +409,7 @@ def main():
                     continue   # skip inference this frame, use cached best
 
                 # Classify this crop — returns confidence score too
-                color, brand, brand_conf = classify_crop(crop, clip_model, clip_processor)
+                color, brand, brand_conf = classify_crop(crop, clip_model, clip_processor, text_feats)
 
                 # Match a plate to this vehicle bbox
                 fake_vehicle = {"bbox": t["bbox"]}
@@ -478,8 +486,8 @@ def main():
                     })
                     log_placeholder.dataframe(log_rows, use_container_width=True)
 
-            # Update annotated frame every 3rd frame
-            if frame_idx % 3 == 0:
+            # Update annotated frame every 10th frame to reduce UI thrashing
+            if frame_idx % 10 == 0:
                 annotated = draw_tracked(frame_rgb, tracks, last_plate, track_store)
                 frame_display.image(annotated, caption=f"@ {timestamp_sec:.0f}s", use_column_width=True)
 
