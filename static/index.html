@@ -189,6 +189,34 @@
   .conf-med  { color: #fde68a; }
   .conf-low  { color: #fca5a5; }
   #empty-row { text-align: center; color: #444; padding: 24px; }
+
+  /* Primary car card */
+  .primary-card {
+    background: #0d1f0f;
+    border: 2px solid #16a34a;
+    border-radius: 12px;
+    padding: 16px 20px;
+    margin: 12px 16px;
+    display: none;
+  }
+  .primary-card.active { display: block; }
+  .primary-card-title {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #4ade80;
+    margin-bottom: 12px;
+  }
+  .primary-fields {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+  .pf-label { font-size: 0.7rem; color: #666; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3px; }
+  .pf-value { font-size: 1.05rem; font-weight: 700; color: #fff; }
+  .pf-conf  { font-size: 0.72rem; color: #4ade80; margin-top: 2px; }
+  .plate-big { font-size: 1.4rem; font-weight: 800; color: #fdba74; letter-spacing: 0.1em; }
 </style>
 </head>
 <body>
@@ -221,9 +249,31 @@
 
   <div class="table-panel">
     <div class="table-title-row">
-      <span>📋 Detections</span>
+      <span>📋 Detection Log</span>
       <span id="row-count">0 rows</span>
     </div>
+
+    <!-- Primary vehicle card -->
+    <div class="primary-card" id="primary-card">
+      <div class="primary-card-title">🚗 Primary Vehicle</div>
+      <div class="primary-fields">
+        <div>
+          <div class="pf-label">Plate</div>
+          <div class="pf-value plate-big" id="pc-plate">—</div>
+        </div>
+        <div>
+          <div class="pf-label">Colour</div>
+          <div class="pf-value" id="pc-color">—</div>
+          <div class="pf-conf" id="pc-color-conf"></div>
+        </div>
+        <div>
+          <div class="pf-label">Brand</div>
+          <div class="pf-value" id="pc-brand">—</div>
+          <div class="pf-conf" id="pc-brand-conf"></div>
+        </div>
+      </div>
+    </div>
+
     <div class="table-scroll">
       <table>
         <thead>
@@ -297,9 +347,20 @@ function appendRows(rows) {
   document.getElementById('row-count').textContent = rows.length + ' row' + (rows.length !== 1 ? 's' : '');
 }
 
+function updatePrimaryCard(p) {
+  if (!p) return;
+  document.getElementById('primary-card').classList.add('active');
+  document.getElementById('pc-plate').textContent  = p.plate || '—';
+  document.getElementById('pc-color').textContent  = p.color || '—';
+  document.getElementById('pc-brand').textContent  = p.brand || '—';
+  document.getElementById('pc-color-conf').textContent = p.color_conf ? `Confidence: ${p.color_conf}` : '';
+  document.getElementById('pc-brand-conf').textContent = p.brand_conf ? `Confidence: ${p.brand_conf}` : '';
+}
+
 function pollStatus() {
   fetch(BASE + '/status').then(r => r.json()).then(data => {
     if (data.rows && data.rows.length > lastRowCount) appendRows(data.rows);
+    if (data.primary) updatePrimaryCard(data.primary);
     if (data.progress !== undefined) {
       document.getElementById('progress-fg').style.width = data.progress + '%';
       document.getElementById('status-text').textContent =
@@ -335,6 +396,12 @@ document.getElementById('run-btn').addEventListener('click', async () => {
   document.getElementById('table-body').innerHTML =
     '<tr><td colspan="5" id="empty-row">No detections yet</td></tr>';
   document.getElementById('row-count').textContent = '0 rows';
+  document.getElementById('primary-card').classList.remove('active');
+  document.getElementById('pc-plate').textContent = '—';
+  document.getElementById('pc-color').textContent = '—';
+  document.getElementById('pc-brand').textContent = '—';
+  document.getElementById('pc-color-conf').textContent = '';
+  document.getElementById('pc-brand-conf').textContent = '';
   document.getElementById('progress-fg').style.width = '0%';
   document.getElementById('progress-bg').style.display = 'block';
   document.getElementById('status-text').textContent = 'Uploading…';

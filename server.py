@@ -154,7 +154,13 @@ def track_vehicles(frame_bgr):
         if crop.size == 0:
             continue
         tracks.append({"track_id": int(tid.item()), "bbox": (x1, y1, x2, y2),
-                        "crop": crop, "confidence": conf.item()})
+                        "crop": crop, "confidence": conf.item(),
+                        "area": (x2 - x1) * (y2 - y1)})
+    # Mark the largest vehicle as primary
+    if tracks:
+        primary_idx = max(range(len(tracks)), key=lambda i: tracks[i]["area"])
+        for i, t in enumerate(tracks):
+            t["primary"] = (i == primary_idx)
     return tracks
 
 
@@ -181,12 +187,20 @@ def draw_frame(frame_rgb, tracks, plate_results, track_store):
     img = frame_rgb.copy()
     for t in tracks:
         x1, y1, x2, y2 = t["bbox"]
-        tid  = t["track_id"]
-        info = track_store.get(tid, {})
-        label = f"#{tid} {info.get('brand','?')}  {info.get('color','?')}  {info.get('conf',0):.0%}"
-        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 200, 0), 2)
+        tid     = t["track_id"]
+        primary = t.get("primary", False)
+        info    = track_store.get(tid, {})
+        if primary:
+            color_box = (0, 220, 0)
+            label = f"PRIMARY #{tid} | {info.get('brand','?')} | {info.get('color','?')} | {info.get('conf',0):.0%}"
+            thickness = 3
+        else:
+            color_box = (120, 120, 120)
+            label = f"#{tid}"
+            thickness = 1
+        cv2.rectangle(img, (x1, y1), (x2, y2), color_box, thickness)
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-        cv2.rectangle(img, (x1, max(y1 - th - 6, 0)), (x1 + tw + 4, y1), (0, 200, 0), -1)
+        cv2.rectangle(img, (x1, max(y1 - th - 6, 0)), (x1 + tw + 4, y1), color_box, -1)
         cv2.putText(img, label, (x1 + 2, max(y1 - 4, th)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1)
     for p in plate_results:
@@ -238,15 +252,27 @@ def _run_video(video_path: str):
                 matched   = match_plate(last_plate, bbox)
                 plate_txt = matched["plate"] if matched else "—"
             with _state_lock:
-                _log_rows.append({
-                    "id":         tid,
-                    "plate":      plate_txt,
-                    "color":      color,
-                    "color_conf": f"{color_conf:.0%}",
-                    "brand":      brand,
-                    "brand_conf": f"{brand_conf:.0%}",
-                    "time":       f"{mins:02d}:{secs:02d}",
-                })
+                # Only log if this vehicle is not already in the log (deduplicate by id)
+                existing_ids = {r["id"] for r in _log_rows}
+                if tid not in existing_ids:
+                    _log_rows.append({
+                        "id":         tid,
+                        "plate":      plate_txt,
+                        "color":      color,
+                        "color_conf": f"{color_conf:.0%}",
+                        "brand":      brand,
+                        "brand_conf": f"{brand_conf:.0%}",
+                        "time":       f"{mins:02d}:{secs:02d}",
+                    })
+                else:
+                    # Update existing row with latest info
+                    for r in _log_rows:
+                        if r["id"] == tid:
+                            r.update({"plate": plate_txt, "color": color,
+                                      "color_conf": f"{color_conf:.0%}",
+                                      "brand": brand, "brand_conf": f"{brand_conf:.0%}",
+                                      "time": f"{mins:02d}:{secs:02d}"})
+                            break
             infer_q.task_done()
 
     worker = threading.Thread(target=inference_worker, daemon=True)
@@ -277,9 +303,12 @@ def _run_video(video_path: str):
                         last_plate.clear()
                         last_plate.extend(new_plates)
 
-            for t in tracks:
+            # Only run inference on the primary (largest) vehicle
+            primary = next((t for t in tracks if t.get("primary")), None)
+            if primary:
                 try:
-                    infer_q.put_nowait((t["track_id"], t["crop"], t["bbox"], timestamp))
+                    infer_q.put_nowait((primary["track_id"], primary["crop"],
+                                       primary["bbox"], timestamp))
                 except queue.Full:
                     pass
 
@@ -328,14 +357,18 @@ async def get_frame():
 
 @app.get("/status")
 async def get_status():
-    """Returns progress + log rows + done flag."""
+    """Returns progress + log rows + done flag + latest primary vehicle."""
     with _state_lock:
-        return JSONResponse({
-            "progress": _progress,
-            "done":     _done,
-            "active":   _active_job,
-            "rows":     list(_log_rows),
-        })
+        rows = list(_log_rows)
+    # Latest entry is the most recent primary vehicle seen
+    primary = rows[-1] if rows else None
+    return JSONResponse({
+        "progress": _progress,
+        "done":     _done,
+        "active":   _active_job,
+        "rows":     rows,
+        "primary":  primary,
+    })
 
 
 @app.post("/upload")
