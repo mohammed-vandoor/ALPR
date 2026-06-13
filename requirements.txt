@@ -10,6 +10,7 @@ torchvision
 timm
 huggingface_hub
 transformers
+gradio
 matplotlib
 scipy
 polars
