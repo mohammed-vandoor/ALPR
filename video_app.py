@@ -56,7 +56,7 @@ def classify_crop(crop_bgr, clip_model, clip_processor, text_feats):
     img_inputs = clip_processor(images=pil, return_tensors="pt").to(DEVICE)
     with torch.no_grad():
         img_feats = clip_model.get_image_features(**img_inputs)
-        img_feats = img_feats / img_feats.norm(dim=-1, keepdim=True)
+        img_feats = img_feats / img_feats.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-8)
         logits    = (img_feats @ text_feats.T) * clip_model.logit_scale.exp()
         probs     = torch.softmax(logits[0], dim=0)
     best_idx   = probs.argmax().item()
@@ -91,7 +91,8 @@ def load_clip():
     text_inputs = processor(text=_BRAND_PROMPTS, return_tensors="pt", padding=True).to(DEVICE)
     with torch.no_grad():
         text_feats = model.get_text_features(**text_inputs)
-        text_feats = text_feats / text_feats.norm(dim=-1, keepdim=True)  # normalise
+        norms      = text_feats.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-8)
+        text_feats = (text_feats / norms).detach()
     return model, processor, text_feats
 
 
