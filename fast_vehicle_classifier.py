@@ -19,13 +19,23 @@ _COLOR_TFM = transforms.Compose([
 _MODEL_PATH   = os.path.join(os.path.dirname(__file__), "models", "color_classifier.pth")
 _CLASSES_PATH = os.path.join(os.path.dirname(__file__), "models", "color_classes.json")
 
+# Fallback class list in case json file is missing
+_FALLBACK_CLASSES = ["beige", "black", "blue", "brown", "gold", "green", "grey",
+                     "orange", "pink", "purple", "red", "silver", "tan", "white", "yellow"]
+
+os.makedirs(os.path.dirname(_MODEL_PATH), exist_ok=True)
+
+if not os.path.exists(_CLASSES_PATH):
+    with open(_CLASSES_PATH, "w") as _f:
+        json.dump(_FALLBACK_CLASSES, _f)
+    print("Created color_classes.json from fallback")
+
 if not os.path.exists(_MODEL_PATH):
     try:
         from huggingface_hub import hf_hub_download
-        os.makedirs(os.path.dirname(_MODEL_PATH), exist_ok=True)
+        import shutil
         _dl = hf_hub_download(repo_id="NihalVandoor/alpr-color-classifier",
                               filename="color_classifier.pth")
-        import shutil
         shutil.copy(_dl, _MODEL_PATH)
         print("Downloaded colour model from HuggingFace Hub")
     except Exception as e:
