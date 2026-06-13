@@ -257,6 +257,9 @@ def main():
 
     st.markdown(f"**Duration:** {duration/60:.1f} min &nbsp;|&nbsp; **FPS:** {fps:.0f} &nbsp;|&nbsp; **Frames:** {total_frames:,}")
 
+    # ── Continuous video player ───────────────────────────────────────
+    st.video(video_path)
+
     # ── Scrub to any timestamp ────────────────────────────────────────
     seek_sec = st.slider("Jump to timestamp (seconds)", 0, int(duration), 0)
 
@@ -469,10 +472,11 @@ def main():
                     })
                     log_placeholder.dataframe(log_rows, use_container_width=True)
 
-            # Show annotated frame every 5th frame to keep UI responsive
-            if frame_idx % 5 == 0:
+            # Show annotated snapshot only when a new vehicle is locked (not every frame)
+            # Continuous video is shown via st.video above — st.image updates look choppy
+            if vehicle_count > len(log_rows) - 1 if log_rows else False:
                 annotated = draw_tracked(frame_rgb, tracks, last_plate, track_store)
-                frame_display.image(annotated, caption=f"@ {timestamp_sec:.0f}s", use_column_width=True)
+                frame_display.image(annotated, caption=f"Vehicle locked @ {timestamp_sec:.0f}s", use_column_width=True)
 
         cap.release()
         progress.progress(1.0)
