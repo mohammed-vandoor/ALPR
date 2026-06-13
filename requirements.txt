@@ -11,6 +11,10 @@ timm
 huggingface_hub
 transformers
 gradio
+fastapi
+uvicorn[standard]
+python-multipart
+websockets
 matplotlib
 scipy
 polars

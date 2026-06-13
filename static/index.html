@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>ALPR — Vehicle Identification</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; }
+
+  header {
+    background: #1a1d2e;
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-bottom: 1px solid #2a2d3e;
+  }
+  header h1 { font-size: 1.3rem; font-weight: 600; color: #fff; }
+  header span { font-size: 0.85rem; color: #888; }
+
+  .device-badge {
+    margin-left: auto;
+    background: #1e3a5f;
+    color: #5ba4f5;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+
+  main {
+    display: grid;
+    grid-template-columns: 1fr 420px;
+    grid-template-rows: auto 1fr;
+    gap: 16px;
+    padding: 16px;
+    height: calc(100vh - 61px);
+  }
+
+  /* Upload panel */
+  .upload-panel {
+    grid-column: 1 / -1;
+    background: #1a1d2e;
+    border-radius: 10px;
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    border: 1px solid #2a2d3e;
+  }
+  .upload-panel label {
+    font-size: 0.9rem;
+    color: #aaa;
+    white-space: nowrap;
+  }
+  #file-input {
+    flex: 1;
+    background: #0f1117;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 7px 10px;
+    color: #e0e0e0;
+    font-size: 0.9rem;
+  }
+  #run-btn {
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 24px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+    white-space: nowrap;
+  }
+  #run-btn:hover { background: #1d4ed8; }
+  #run-btn:disabled { background: #374151; cursor: not-allowed; }
+
+  .progress-wrap { flex: 1; }
+  .progress-bar-bg {
+    background: #2a2d3e;
+    border-radius: 6px;
+    height: 8px;
+    overflow: hidden;
+    display: none;
+  }
+  .progress-bar-fg {
+    height: 100%;
+    background: #2563eb;
+    border-radius: 6px;
+    transition: width 0.3s;
+    width: 0%;
+  }
+  #status-text { font-size: 0.8rem; color: #888; margin-top: 4px; }
+
+  /* Video panel */
+  .video-panel {
+    background: #1a1d2e;
+    border-radius: 10px;
+    border: 1px solid #2a2d3e;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .panel-title {
+    padding: 10px 16px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #aaa;
+    border-bottom: 1px solid #2a2d3e;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  #video-feed {
+    flex: 1;
+    width: 100%;
+    object-fit: contain;
+    background: #000;
+    display: block;
+  }
+  .no-feed {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #444;
+    font-size: 0.9rem;
+  }
+
+  /* Table panel */
+  .table-panel {
+    background: #1a1d2e;
+    border-radius: 10px;
+    border: 1px solid #2a2d3e;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .table-title-row {
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #2a2d3e;
+  }
+  .table-title-row span { font-size: 0.85rem; font-weight: 600; color: #aaa; text-transform: uppercase; letter-spacing: 0.05em; }
+  #row-count { font-size: 0.8rem; color: #2563eb; font-weight: 600; }
+  .table-scroll { flex: 1; overflow-y: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  thead th {
+    position: sticky;
+    top: 0;
+    background: #12151f;
+    padding: 8px 10px;
+    text-align: left;
+    color: #666;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid #2a2d3e;
+  }
+  tbody tr { border-bottom: 1px solid #1e2130; transition: background 0.15s; }
+  tbody tr:hover { background: #1e2336; }
+  tbody td { padding: 7px 10px; vertical-align: middle; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .badge-green  { background: #14532d; color: #86efac; }
+  .badge-blue   { background: #1e3a5f; color: #93c5fd; }
+  .badge-orange { background: #7c2d12; color: #fdba74; }
+  .badge-gray   { background: #1f2937; color: #9ca3af; }
+  .conf-pill {
+    display: inline-block;
+    background: #1f2937;
+    color: #9ca3af;
+    font-size: 0.72rem;
+    padding: 1px 6px;
+    border-radius: 10px;
+    margin-left: 4px;
+  }
+  .conf-high { color: #86efac; }
+  .conf-med  { color: #fde68a; }
+  .conf-low  { color: #fca5a5; }
+  #empty-row { text-align: center; color: #444; padding: 24px; }
+</style>
+</head>
+<body>
+
+<header>
+  <span style="font-size:1.5rem">🎥</span>
+  <h1>Vehicle Identification — ALPR</h1>
+  <span>Licence Plate · Colour · Brand</span>
+  <div class="device-badge" id="device-badge">Loading…</div>
+</header>
+
+<main>
+  <div class="upload-panel">
+    <label>📁 Video file</label>
+    <input type="file" id="file-input" accept="video/*"/>
+    <button id="run-btn">▶ Process Video</button>
+    <div class="progress-wrap">
+      <div class="progress-bar-bg" id="progress-bg">
+        <div class="progress-bar-fg" id="progress-fg"></div>
+      </div>
+      <div id="status-text">Upload a video and press Process</div>
+    </div>
+  </div>
+
+  <div class="video-panel">
+    <div class="panel-title">🔴 Live Detection Feed</div>
+    <div class="no-feed" id="no-feed-msg">Waiting for video…</div>
+    <img id="video-feed" style="display:none" alt="live feed"/>
+  </div>
+
+  <div class="table-panel">
+    <div class="table-title-row">
+      <span>📋 Detections</span>
+      <span id="row-count">0 rows</span>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Vehicle ID</th>
+            <th>Plate</th>
+            <th>Colour</th>
+            <th>Brand</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody id="table-body">
+          <tr><td colspan="5" id="empty-row">No detections yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+const BASE = window.location.origin;
+let ws = null;
+let pollInterval = null;
+let lastRowCount = 0;
+
+// Fetch device info
+fetch(BASE + '/log').then(r => r.json()).then(() => {
+  document.getElementById('device-badge').textContent = 'GPU Ready';
+}).catch(() => {
+  document.getElementById('device-badge').textContent = 'Server Ready';
+});
+
+function confClass(s) {
+  const v = parseFloat(s);
+  if (v >= 70) return 'conf-high';
+  if (v >= 45) return 'conf-med';
+  return 'conf-low';
+}
+
+function colorBadge(color) {
+  const map = {
+    black:'#111 color:#aaa', white:'#f5f5f5 color:#333',
+    silver:'#64748b color:#e2e8f0', gray:'#374151 color:#d1d5db',
+    red:'#7f1d1d color:#fca5a5', blue:'#1e3a5f color:#93c5fd',
+    green:'#14532d color:#86efac', yellow:'#78350f color:#fde68a',
+    orange:'#7c2d12 color:#fdba74', brown:'#451a03 color:#d97706',
+  };
+  const key = (color||'').toLowerCase();
+  const style = map[key] || 'background:#1f2937;color:#9ca3af';
+  const parts = style.split(' ');
+  return `<span class="badge" style="background:${parts[0].split(':')[1]};${parts[1]}">${color||'?'}</span>`;
+}
+
+function appendRows(rows) {
+  const tbody = document.getElementById('table-body');
+  const empty = document.getElementById('empty-row');
+  if (empty) empty.remove();
+
+  for (let i = lastRowCount; i < rows.length; i++) {
+    const r = rows[i];
+    const conf = parseFloat(r.brand_conf || '0');
+    const confPct = Math.round(conf * 100);
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><span class="badge badge-gray">#${r.id}</span></td>
+      <td>${r.plate === '—' ? '<span style="color:#555">—</span>'
+            : `<span class="badge badge-orange">${r.plate}</span>`}</td>
+      <td>${colorBadge(r.color)} <span class="conf-pill ${confClass(r.color_conf||'0%')}">${r.color_conf||'?'}</span></td>
+      <td><span class="badge badge-blue">${r.brand||'?'}</span> <span class="conf-pill ${confClass(r.brand_conf||'0%')}">${r.brand_conf||'?'}</span></td>
+      <td style="color:#666;font-size:0.78rem">${r.time||''}</td>
+    `;
+    tbody.appendChild(tr);
+    tbody.parentElement.scrollTop = tbody.parentElement.scrollHeight;
+  }
+  lastRowCount = rows.length;
+  document.getElementById('row-count').textContent = rows.length + ' row' + (rows.length !== 1 ? 's' : '');
+}
+
+function pollLog() {
+  fetch(BASE + '/log').then(r => r.json()).then(data => {
+    if (data.rows && data.rows.length > lastRowCount) {
+      appendRows(data.rows);
+    }
+  }).catch(() => {});
+}
+
+document.getElementById('run-btn').addEventListener('click', async () => {
+  const fileInput = document.getElementById('file-input');
+  if (!fileInput.files.length) { alert('Please select a video file first.'); return; }
+
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  btn.textContent = 'Uploading…';
+
+  // Reset table
+  lastRowCount = 0;
+  document.getElementById('table-body').innerHTML = '<tr><td colspan="5" id="empty-row">No detections yet</td></tr>';
+  document.getElementById('row-count').textContent = '0 rows';
+
+  // Upload file
+  const form = new FormData();
+  form.append('file', fileInput.files[0]);
+  let uploadRes;
+  try {
+    uploadRes = await fetch(BASE + '/upload', { method: 'POST', body: form });
+    uploadRes = await uploadRes.json();
+  } catch(e) { alert('Upload failed: ' + e); btn.disabled = false; btn.textContent = '▶ Process Video'; return; }
+
+  if (uploadRes.error) { alert(uploadRes.error); btn.disabled = false; btn.textContent = '▶ Process Video'; return; }
+
+  // Show progress bar
+  document.getElementById('progress-bg').style.display = 'block';
+  document.getElementById('progress-fg').style.width = '0%';
+  document.getElementById('video-feed').style.display = 'block';
+  document.getElementById('no-feed-msg').style.display = 'none';
+  btn.textContent = 'Processing…';
+  document.getElementById('status-text').textContent = 'Starting…';
+
+  // Poll log every second
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(pollLog, 1000);
+
+  // Connect WebSocket
+  const wsUrl = BASE.replace('https://', 'wss://').replace('http://', 'ws://') + '/ws';
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ path: uploadRes.path }));
+  };
+
+  ws.onmessage = (evt) => {
+    const msg = JSON.parse(evt.data);
+    if (msg.error) {
+      alert('Error: ' + msg.error);
+      cleanup();
+      return;
+    }
+    if (msg.frame) {
+      document.getElementById('video-feed').src = 'data:image/jpeg;base64,' + msg.frame;
+    }
+    if (msg.progress !== undefined) {
+      document.getElementById('progress-fg').style.width = msg.progress + '%';
+      document.getElementById('status-text').textContent =
+        `Processing… ${msg.progress}%  ·  ${msg.rows} detection(s)`;
+    }
+    if (msg.done) {
+      document.getElementById('status-text').textContent = `✅ Done — ${msg.rows} detection(s)`;
+      cleanup(false);
+    }
+  };
+
+  ws.onerror = () => { alert('WebSocket error — check server logs.'); cleanup(); };
+  ws.onclose = () => { cleanup(false); };
+});
+
+function cleanup(resetBtn = true) {
+  if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+  pollLog(); // final poll
+  if (resetBtn) {
+    document.getElementById('run-btn').disabled = false;
+    document.getElementById('run-btn').textContent = '▶ Process Video';
+  } else {
+    document.getElementById('run-btn').disabled = false;
+    document.getElementById('run-btn').textContent = '▶ Process Video';
+  }
+}
+</script>
+</body>
+</html>
