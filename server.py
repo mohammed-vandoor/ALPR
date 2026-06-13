@@ -7,10 +7,12 @@ import threading
 import base64
 from typing import List, Dict, Any
 
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.requests import Request
 
 from PIL import Image
 from ultralytics import YOLO
@@ -58,6 +60,15 @@ print("[server] Models loaded.")
 # ── FastAPI app ────────────────────────────────────────────────────────────────
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse({"error": str(exc)}, status_code=500)
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse({"error": str(exc)}, status_code=422)
+
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
 # ── Shared state (one processing job at a time) ────────────────────────────────
@@ -303,24 +314,28 @@ async def get_status():
 
 
 @app.post("/upload")
-async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def upload_video(file: UploadFile = File(...)):
     global _active_job, _progress, _done, _latest_jpeg
 
     with _state_lock:
         if _active_job:
             return JSONResponse({"error": "A video is already being processed."}, status_code=409)
-        # Reset all state for new upload
         _active_job  = True
         _progress    = 0
         _done        = False
         _latest_jpeg = b""
         _log_rows.clear()
 
-    tmp_path = f"/tmp/{file.filename}"
-    with open(tmp_path, "wb") as f:
-        f.write(await file.read())
+    try:
+        contents = await file.read()
+        tmp_path  = f"/tmp/{file.filename}"
+        with open(tmp_path, "wb") as f:
+            f.write(contents)
+    except Exception as e:
+        with _state_lock:
+            _active_job = False
+        return JSONResponse({"error": f"File save failed: {e}"}, status_code=500)
 
-    # Start processing in background thread (not async — CPU/GPU bound)
     t = threading.Thread(target=_run_video, args=(tmp_path,), daemon=True)
     t.start()
 
