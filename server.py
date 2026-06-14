@@ -31,19 +31,19 @@ JPEG_QUALITY      = 70   # lower = faster streaming
 
 # Region of Interest (fractions of frame: left, top, right, bottom)
 # Only vehicles whose centre falls inside this zone get classified/logged
-ROI = (0.50, 0.00, 0.20, 0.0)
+ROI = (0.40, 0.08, 0.80, 0.72)
 
-# Pre-loaded videos bundled with the app
-VIDEOS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "videos")
+# Pre-loaded videos — read from the app root folder
+VIDEOS_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Car brands — European-focused for front-view camera
 CAR_BRANDS = [
-    "Toyota", "Honda", "Ford", "Chevrolet", "BMW", "Mercedes-Benz", "Volkswagen",
-    "Audi", "Nissan", "Hyundai", "Kia", "Mazda", "Subaru", "Lexus", "Jeep",
-    "Ram", "GMC", "Cadillac", "Volvo", "Porsche", "Land Rover", "Range Rover",
-    "Jaguar", "Mitsubishi", "Suzuki", "Renault", "Peugeot", "Citroën", "Fiat",
-    "Tesla", "Chrysler", "Dodge", "Buick", "Infiniti", "Acura", "Genesis",
+    "Dacia", "Renault", "Peugeot", "Volkswagen", "Toyota", "Honda", "Ford",
+    "BMW", "Mercedes-Benz", "Audi", "Hyundai", "Kia", "Nissan", "Mazda",
+    "Skoda", "Seat", "Opel", "Fiat", "Citroën", "Volvo", "Mitsubishi",
+    "Suzuki", "Subaru", "Jeep", "Land Rover", "Porsche", "Tesla",
 ]
-_BRAND_PROMPTS = [f"a photo of a {b} car" for b in CAR_BRANDS]
+_BRAND_PROMPTS = [f"a front view photo of a {b} car" for b in CAR_BRANDS]
 
 # ── Load models once at startup ────────────────────────────────────────────────
 print(f"[server] Loading models on {DEVICE}...")
@@ -53,13 +53,15 @@ _alpr      = ALPR(detector_model="yolo-v9-t-384-license-plate-end2end",
 _detector  = YOLO(YOLO_PATH)
 
 try:
+    from transformers import CLIPTextModel, CLIPVisionModel, CLIPTokenizerFast
     _clip_model     = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(DEVICE).eval()
     _clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
     _text_inputs    = _clip_processor(text=_BRAND_PROMPTS, return_tensors="pt", padding=True).to(DEVICE)
     with torch.no_grad():
-        _tf = _clip_model.text_model(**_text_inputs)
-        _tf = _clip_model.text_projection(_tf.pooler_output)
-        _text_feats = (_tf / _tf.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-8)).detach()
+        # Use raw text_model output to avoid .norm() bug in old transformers
+        text_out = _clip_model.text_model(**_text_inputs)
+        _tf = text_out.pooler_output @ _clip_model.text_projection.weight.T
+        _text_feats = torch.nn.functional.normalize(_tf, p=2, dim=-1).detach()
     _CLIP_OK = True
     print("[server] CLIP loaded OK")
 except Exception as e:
@@ -111,11 +113,12 @@ def classify_crop(crop_bgr):
     pil        = Image.fromarray(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB))
     img_inputs = _clip_processor(images=pil, return_tensors="pt").to(DEVICE)
     with torch.no_grad():
-        img_out   = _clip_model.vision_model(**img_inputs)
-        img_feats = _clip_model.visual_projection(img_out.pooler_output)
-        img_feats = img_feats / img_feats.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-8)
-        logits    = (img_feats @ _text_feats.T) * _clip_model.logit_scale.exp()
-        probs     = torch.softmax(logits[0], dim=0)
+        # Use raw vision_model output to avoid .norm() bug in old transformers
+        vision_out = _clip_model.vision_model(**img_inputs)
+        img_feats  = vision_out.pooler_output @ _clip_model.visual_projection.weight.T
+        img_feats  = torch.nn.functional.normalize(img_feats, p=2, dim=-1)
+        logits     = (img_feats @ _text_feats.T) * 100
+        probs      = torch.softmax(logits[0], dim=0)
     best_idx   = probs.argmax().item()
     brand_conf = probs[best_idx].item()
     return color, color_conf, CAR_BRANDS[best_idx], brand_conf

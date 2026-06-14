@@ -18,8 +18,12 @@ RUN pip install --no-cache-dir torch torchvision --index-url https://download.py
 RUN pip install --no-cache-dir \
     streamlit opencv-python-headless fast-alpr Pillow numpy \
     onnxruntime ultralytics timm huggingface_hub \
-    transformers fastapi "uvicorn[standard]" python-multipart \
+    fastapi "uvicorn[standard]" python-multipart \
     websockets pandas pyarrow
+
+# Install transformers separately with force-reinstall to avoid stale cache
+RUN pip install --no-cache-dir --force-reinstall "transformers==4.41.2" tokenizers
+RUN python -c "import transformers; print('transformers version:', transformers.__version__)"
 
 # Copy app code
 COPY . .
