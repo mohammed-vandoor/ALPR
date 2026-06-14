@@ -33,6 +33,9 @@ JPEG_QUALITY      = 70   # lower = faster streaming
 # Only vehicles whose centre falls inside this zone get classified/logged
 ROI = (0.50, 0.05, 0.70, 0.55)
 
+# Pre-loaded videos bundled with the app
+VIDEOS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "videos")
+
 CAR_BRANDS = [
     "Toyota", "Honda", "Ford", "Chevrolet", "BMW", "Mercedes-Benz", "Volkswagen",
     "Audi", "Nissan", "Hyundai", "Kia", "Mazda", "Subaru", "Lexus", "Jeep",
@@ -356,6 +359,37 @@ async def get_status():
         "rows":     rows,
         "primary":  primary,
     })
+
+
+@app.get("/videos")
+async def list_videos():
+    """Returns list of pre-loaded video filenames from the videos/ folder."""
+    if not os.path.isdir(VIDEOS_DIR):
+        return JSONResponse([])
+    files = sorted(f for f in os.listdir(VIDEOS_DIR)
+                   if f.lower().endswith((".mkv", ".mp4", ".avi", ".mov")))
+    return JSONResponse(files)
+
+
+@app.post("/run-preset")
+async def run_preset(payload: dict):
+    """Start processing a pre-loaded video by filename."""
+    global _active_job, _progress, _done, _latest_jpeg
+    filename = payload.get("filename", "")
+    video_path = os.path.join(VIDEOS_DIR, os.path.basename(filename))
+    if not os.path.isfile(video_path):
+        return JSONResponse({"error": f"File not found: {filename}"}, status_code=404)
+    with _state_lock:
+        if _active_job:
+            return JSONResponse({"error": "A video is already being processed."}, status_code=409)
+        _active_job  = True
+        _progress    = 0
+        _done        = False
+        _latest_jpeg = b""
+        _log_rows.clear()
+    t = threading.Thread(target=_run_video, args=(video_path,), daemon=True)
+    t.start()
+    return JSONResponse({"started": True, "file": filename})
 
 
 @app.post("/upload")

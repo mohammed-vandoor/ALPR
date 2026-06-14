@@ -230,9 +230,16 @@
 
 <main>
   <div class="upload-panel">
-    <label>📁 Video file</label>
+    <label>🎬 Preset Videos</label>
+    <div style="display:flex;gap:8px;align-items:center">
+      <select id="preset-select" style="flex:1;background:#1a1a2e;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:6px 10px;font-size:0.85rem">
+        <option value="">Loading…</option>
+      </select>
+      <button id="preset-btn" style="white-space:nowrap">▶ Run</button>
+    </div>
+    <label style="margin-top:10px">📁 Or upload a video</label>
     <input type="file" id="file-input" accept="video/*"/>
-    <button id="run-btn">▶ Process Video</button>
+    <button id="run-btn">▶ Upload &amp; Process</button>
     <div class="progress-wrap">
       <div class="progress-bar-bg" id="progress-bg">
         <div class="progress-bar-fg" id="progress-fg"></div>
@@ -299,6 +306,55 @@ const BASE = window.location.origin;
 let pollInterval  = null;
 let frameInterval = null;
 let lastRowCount  = 0;
+
+// Load preset video list
+fetch(BASE + '/videos').then(r => r.json()).then(files => {
+  const sel = document.getElementById('preset-select');
+  if (!files.length) { sel.innerHTML = '<option value="">No preset videos found</option>'; return; }
+  sel.innerHTML = files.map(f => `<option value="${f}">${f}</option>`).join('');
+}).catch(() => {});
+
+document.getElementById('preset-btn').addEventListener('click', async () => {
+  const sel = document.getElementById('preset-select');
+  const filename = sel.value;
+  if (!filename) { alert('No preset selected.'); return; }
+  const btn = document.getElementById('preset-btn');
+  btn.disabled = true; btn.textContent = 'Starting…';
+  resetUI();
+  let res;
+  try {
+    res = await fetch(BASE + '/run-preset', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({filename})
+    });
+    res = await res.json();
+  } catch(e) { alert('Failed: ' + e); btn.disabled = false; btn.textContent = '▶ Run'; return; }
+  if (res.error) { alert(res.error); btn.disabled = false; btn.textContent = '▶ Run'; return; }
+  document.getElementById('video-feed').style.display = 'block';
+  document.getElementById('no-feed-msg').style.display = 'none';
+  btn.textContent = 'Running…';
+  document.getElementById('status-text').textContent = 'Processing…';
+  if (pollInterval)  clearInterval(pollInterval);
+  if (frameInterval) clearInterval(frameInterval);
+  pollInterval  = setInterval(pollStatus, 800);
+  frameInterval = setInterval(refreshFrame, 300);
+});
+
+function resetUI() {
+  lastRowCount = 0;
+  document.getElementById('table-body').innerHTML = '<tr><td colspan="5" id="empty-row">No detections yet</td></tr>';
+  document.getElementById('row-count').textContent = '0 rows';
+  document.getElementById('primary-card').classList.remove('active');
+  document.getElementById('pc-plate').textContent = '—';
+  document.getElementById('pc-color').textContent = '—';
+  document.getElementById('pc-brand').textContent = '—';
+  document.getElementById('pc-color-conf').textContent = '';
+  document.getElementById('pc-brand-conf').textContent = '';
+  document.getElementById('progress-fg').style.width = '0%';
+  document.getElementById('progress-bg').style.display = 'block';
+  document.getElementById('status-text').textContent = 'Processing…';
+}
 
 fetch(BASE + '/status').then(r => r.json()).then(() => {
   document.getElementById('device-badge').textContent = 'Server Ready';
@@ -393,21 +449,7 @@ document.getElementById('run-btn').addEventListener('click', async () => {
   const btn = document.getElementById('run-btn');
   btn.disabled = true;
   btn.textContent = 'Uploading…';
-
-  // Reset UI
-  lastRowCount = 0;
-  document.getElementById('table-body').innerHTML =
-    '<tr><td colspan="5" id="empty-row">No detections yet</td></tr>';
-  document.getElementById('row-count').textContent = '0 rows';
-  document.getElementById('primary-card').classList.remove('active');
-  document.getElementById('pc-plate').textContent = '—';
-  document.getElementById('pc-color').textContent = '—';
-  document.getElementById('pc-brand').textContent = '—';
-  document.getElementById('pc-color-conf').textContent = '';
-  document.getElementById('pc-brand-conf').textContent = '';
-  document.getElementById('progress-fg').style.width = '0%';
-  document.getElementById('progress-bg').style.display = 'block';
-  document.getElementById('status-text').textContent = 'Uploading…';
+  resetUI();
 
   const form = new FormData();
   form.append('file', fileInput.files[0]);
