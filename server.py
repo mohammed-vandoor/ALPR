@@ -31,7 +31,7 @@ JPEG_QUALITY      = 70   # lower = faster streaming
 
 # Region of Interest (fractions of frame: left, top, right, bottom)
 # Only vehicles whose centre falls inside this zone get classified/logged
-ROI = (0.05, 0.20, 0.95, 0.85)
+ROI = (0.50, 0.05, 0.70, 0.55)
 
 CAR_BRANDS = [
     "Toyota", "Honda", "Ford", "Chevrolet", "BMW", "Mercedes-Benz", "Volkswagen",
