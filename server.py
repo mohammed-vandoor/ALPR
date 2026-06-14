@@ -29,6 +29,10 @@ PLATE_EVERY_N     = 4
 MAX_VIDEO_WIDTH   = 1280
 JPEG_QUALITY      = 70   # lower = faster streaming
 
+# Region of Interest (fractions of frame: left, top, right, bottom)
+# Only vehicles whose centre falls inside this zone get classified/logged
+ROI = (0.05, 0.20, 0.95, 0.85)
+
 CAR_BRANDS = [
     "Toyota", "Honda", "Ford", "Chevrolet", "BMW", "Mercedes-Benz", "Volkswagen",
     "Audi", "Nissan", "Hyundai", "Kia", "Mazda", "Subaru", "Lexus", "Jeep",
@@ -182,8 +186,20 @@ def match_plate(plate_results, vehicle_bbox):
     return best
 
 
+def in_roi(bbox, frame_shape):
+    fh, fw = frame_shape[:2]
+    x1, y1, x2, y2 = bbox
+    cx, cy = (x1 + x2) / 2 / fw, (y1 + y2) / 2 / fh
+    rx1, ry1, rx2, ry2 = ROI
+    return rx1 <= cx <= rx2 and ry1 <= cy <= ry2
+
+
 def draw_frame(frame_rgb, tracks, plate_results, track_store):
     img = frame_rgb.copy()
+    fh, fw = img.shape[:2]
+    rx1, ry1, rx2, ry2 = ROI
+    cv2.rectangle(img, (int(rx1*fw), int(ry1*fh)), (int(rx2*fw), int(ry2*fh)), (0, 200, 255), 2)
+    cv2.putText(img, "ROI", (int(rx1*fw)+6, int(ry1*fh)+22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
     for t in tracks:
         x1, y1, x2, y2 = t["bbox"]
         tid     = t["track_id"]
@@ -257,6 +273,8 @@ def _run_video(video_path: str):
             # Classify every vehicle every 5 frames — simple and direct
             if frame_idx % 5 == 1:
                 for t in tracks:
+                    if not in_roi(t["bbox"], frame.shape):
+                        continue
                     tid  = t["track_id"]
                     crop = t["crop"]
                     bbox = t["bbox"]
