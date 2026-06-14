@@ -31,7 +31,7 @@ JPEG_QUALITY      = 70   # lower = faster streaming
 
 # Region of Interest (fractions of frame: left, top, right, bottom)
 # Only vehicles whose centre falls inside this zone get classified/logged
-ROI = (0.50, 0.05, 0.70, 0.55)
+ROI = (0.50, 0.00, 0.20, 0.0)
 
 # Pre-loaded videos bundled with the app
 VIDEOS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "videos")
