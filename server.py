@@ -241,7 +241,7 @@ def _run_video(video_path: str):
     prev_centres  = {}   # tid -> (cx, cy) last frame — for motion detection
     VOTE_WINDOW   = 7
     LOCK_CONF     = 0.75   # lock colour+brand once both exceed this
-    MOTION_THRESH = 0.04   # fraction of frame diagonal — skip inference if centre moved more
+    MOTION_THRESH = 0.15   # fraction of frame diagonal — skip inference if centre moved more
 
     def majority(votes):
         counts = Counter(v[0] for v in votes)
