@@ -1,8 +1,6 @@
 import os
 import cv2
-import time
 import torch
-import queue
 import threading
 import base64
 from typing import List, Dict, Any
@@ -219,7 +217,6 @@ def frame_to_jpeg(frame_rgb) -> bytes:
 
 
 def _run_video(video_path: str):
-    """Runs in a background thread. Updates global state polled by browser."""
     global _active_job, _progress, _done, _latest_jpeg
 
     cap   = cv2.VideoCapture(video_path)
@@ -228,81 +225,10 @@ def _run_video(video_path: str):
     scale = min(1.0, MAX_VIDEO_WIDTH / raw_w) if raw_w > MAX_VIDEO_WIDTH else 1.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
 
-    track_store   = {}
-    last_plate    = []
-    inner_lock    = threading.Lock()
-    infer_q       = queue.Queue(maxsize=4)
-    stop_evt      = threading.Event()
-    # Vote buffers per track: keep last N colour/brand predictions
-    color_votes   = {}   # tid -> [(color, conf), ...]
-    brand_votes   = {}   # tid -> [(brand, conf), ...]
-    best_plate    = {}   # tid -> {"plate": str, "conf": float}
-    VOTE_WINDOW   = 7
-
-    def majority(votes):
-        counts = Counter(v[0] for v in votes)
-        best   = counts.most_common(1)[0][0]
-        avg_c  = sum(v[1] for v in votes if v[0] == best) / counts[best]
-        return best, avg_c
-
-    def inference_worker():
-        tcc = {}
-        while not stop_evt.is_set():
-            try:
-                tid, crop, bbox, ts = infer_q.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            tcc[tid] = tcc.get(tid, 0) + 1
-            if tcc[tid] % CLASSIFY_EVERY_N != 1:
-                infer_q.task_done()
-                continue
-
-            color, color_conf, brand, brand_conf = classify_crop(crop)
-            mins, secs = int(ts) // 60, int(ts) % 60
-            time_str   = f"{mins:02d}:{secs:02d}"
-
-            # Accumulate votes, keep rolling window
-            color_votes.setdefault(tid, []).append((color, color_conf))
-            brand_votes.setdefault(tid, []).append((brand, brand_conf))
-            color_votes[tid] = color_votes[tid][-VOTE_WINDOW:]
-            brand_votes[tid] = brand_votes[tid][-VOTE_WINDOW:]
-
-            stable_color, stable_color_conf = majority(color_votes[tid])
-            stable_brand, stable_brand_conf = majority(brand_votes[tid])
-
-            with inner_lock:
-                track_store[tid] = {"color": stable_color, "color_conf": stable_color_conf,
-                                    "brand": stable_brand, "conf": stable_brand_conf}
-                matched = match_plate(last_plate, bbox)
-
-            # Always keep the highest-confidence plate seen for this track
-            if matched:
-                prev = best_plate.get(tid, {"plate": "—", "conf": 0.0})
-                if matched["confidence"] >= prev["conf"]:
-                    best_plate[tid] = {"plate": matched["plate"], "conf": matched["confidence"]}
-
-            plate_txt = best_plate.get(tid, {}).get("plate", "—")
-
-            with _state_lock:
-                existing_ids = {r["id"] for r in _log_rows}
-                row = {"id": tid, "plate": plate_txt,
-                       "color": stable_color, "color_conf": f"{stable_color_conf:.0%}",
-                       "brand": stable_brand, "brand_conf": f"{stable_brand_conf:.0%}",
-                       "time": time_str}
-                if tid not in existing_ids:
-                    _log_rows.append(row)
-                else:
-                    for r in _log_rows:
-                        if r["id"] == tid:
-                            r.update(row); break
-
-            infer_q.task_done()
-
-    worker = threading.Thread(target=inference_worker, daemon=True)
-    worker.start()
-
-    frame_idx     = 0
-    plate_counter = 0
+    track_store = {}   # tid -> latest color/brand for overlay
+    last_plate  = []   # latest plate detections
+    best_plate  = {}   # tid -> best plate text seen so far
+    frame_idx   = 0
 
     try:
         while True:
@@ -315,39 +241,61 @@ def _run_video(video_path: str):
                 frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
 
             timestamp = frame_idx / fps
-            tracks    = track_vehicles(frame)
+            mins, secs = int(timestamp) // 60, int(timestamp) % 60
+            time_str   = f"{mins:02d}:{secs:02d}"
+
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            tracks    = track_vehicles(frame)
 
-            plate_counter += 1
-            if plate_counter % PLATE_EVERY_N == 0:
-                new_plates = process_plates(frame_rgb)
-                with inner_lock:
-                    if new_plates:
-                        last_plate.clear()
-                        last_plate.extend(new_plates)
+            # Plate detection every 5 frames
+            if frame_idx % 5 == 0:
+                plates = process_plates(frame_rgb)
+                if plates:
+                    last_plate.clear()
+                    last_plate.extend(plates)
 
-            # Only run inference on the primary (largest) vehicle
-            primary = next((t for t in tracks if t.get("primary")), None)
-            if primary:
-                try:
-                    infer_q.put_nowait((primary["track_id"], primary["crop"],
-                                       primary["bbox"], timestamp))
-                except queue.Full:
-                    pass
+            # Classify every vehicle every 5 frames — simple and direct
+            if frame_idx % 5 == 1:
+                for t in tracks:
+                    tid  = t["track_id"]
+                    crop = t["crop"]
+                    bbox = t["bbox"]
 
-            # Update latest JPEG every 2nd frame
+                    color, color_conf, brand, brand_conf = classify_crop(crop)
+                    track_store[tid] = {"color": color, "color_conf": color_conf,
+                                        "brand": brand, "conf": brand_conf}
+
+                    matched = match_plate(last_plate, bbox)
+                    if matched:
+                        prev = best_plate.get(tid, {"plate": "—", "conf": 0.0})
+                        if matched["confidence"] >= prev["conf"]:
+                            best_plate[tid] = {"plate": matched["plate"],
+                                               "conf": matched["confidence"]}
+
+                    plate_txt = best_plate.get(tid, {}).get("plate", "—")
+
+                    with _state_lock:
+                        existing_ids = {r["id"] for r in _log_rows}
+                        row = {"id": tid, "plate": plate_txt,
+                               "color": color, "color_conf": f"{color_conf:.0%}",
+                               "brand": brand, "brand_conf": f"{brand_conf:.0%}",
+                               "time": time_str}
+                        if tid not in existing_ids:
+                            _log_rows.append(row)
+                        else:
+                            for r in _log_rows:
+                                if r["id"] == tid:
+                                    r.update(row); break
+
+            # Update JPEG every 2nd frame
             if frame_idx % 2 == 0:
-                with inner_lock:
-                    plates_snap = list(last_plate)
-                    store_snap  = dict(track_store)
-                annotated = draw_frame(frame_rgb, tracks, plates_snap, store_snap)
+                annotated = draw_frame(frame_rgb, tracks, list(last_plate), dict(track_store))
                 jpeg = frame_to_jpeg(annotated)
                 with _state_lock:
                     _latest_jpeg = jpeg
                     _progress    = min(round(frame_idx / total * 100), 99)
+
     finally:
-        stop_evt.set()
-        worker.join(timeout=5)
         cap.release()
         with _state_lock:
             _active_job = False
