@@ -91,15 +91,12 @@ app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__
 
 # ── Shared state (one processing job at a time) ────────────────────────────────
 _state_lock  = threading.Lock()
-_log_rows: List[Dict[str, Any]] = []       # live rolling detections
-_final_rows: List[Dict[str, Any]] = []     # finalized unique plate+colour+brand
+_log_rows: List[Dict[str, Any]] = []
 _active_job  = False
 _progress    = 0          # 0-100
 _done        = False
 _latest_jpeg = b""        # raw JPEG bytes of latest annotated frame
 
-COLLECT_WINDOWS = 6   # inference windows to collect after plate lock
-PLATE_LOCK_CONF = 0.90  # confidence threshold to lock a plate
 
 # ── Helper functions ───────────────────────────────────────────────────────────
 def classify_crop(crop_bgr):
@@ -236,8 +233,11 @@ def _run_video(video_path: str):
     inner_lock    = threading.Lock()
     infer_q       = queue.Queue(maxsize=4)
     stop_evt      = threading.Event()
-    # Per-track state: "searching" -> "collecting" -> "finalized"
-    track_state   = {}
+    # Vote buffers per track: keep last N colour/brand predictions
+    color_votes   = {}   # tid -> [(color, conf), ...]
+    brand_votes   = {}   # tid -> [(brand, conf), ...]
+    best_plate    = {}   # tid -> {"plate": str, "conf": float}
+    VOTE_WINDOW   = 7
 
     def majority(votes):
         counts = Counter(v[0] for v in votes)
@@ -257,95 +257,45 @@ def _run_video(video_path: str):
                 infer_q.task_done()
                 continue
 
-            # Init state for new track
-            if tid not in track_state:
-                track_state[tid] = {
-                    "state": "searching",
-                    "plate": "—", "plate_conf": 0.0,
-                    "color_buf": [], "brand_buf": [],
-                    "lock_time": ""
-                }
-            ts_info = track_state[tid]
-
-            # Skip further inference once finalized
-            if ts_info["state"] == "finalized":
-                infer_q.task_done()
-                continue
-
             color, color_conf, brand, brand_conf = classify_crop(crop)
             mins, secs = int(ts) // 60, int(ts) % 60
             time_str   = f"{mins:02d}:{secs:02d}"
 
+            # Accumulate votes, keep rolling window
+            color_votes.setdefault(tid, []).append((color, color_conf))
+            brand_votes.setdefault(tid, []).append((brand, brand_conf))
+            color_votes[tid] = color_votes[tid][-VOTE_WINDOW:]
+            brand_votes[tid] = brand_votes[tid][-VOTE_WINDOW:]
+
+            stable_color, stable_color_conf = majority(color_votes[tid])
+            stable_brand, stable_brand_conf = majority(brand_votes[tid])
+
             with inner_lock:
+                track_store[tid] = {"color": stable_color, "color_conf": stable_color_conf,
+                                    "brand": stable_brand, "conf": stable_brand_conf}
                 matched = match_plate(last_plate, bbox)
 
-            # Update live overlay
-            with inner_lock:
-                track_store[tid] = {"color": color, "color_conf": color_conf,
-                                    "brand": brand, "conf": brand_conf}
+            # Always keep the highest-confidence plate seen for this track
+            if matched:
+                prev = best_plate.get(tid, {"plate": "—", "conf": 0.0})
+                if matched["confidence"] >= prev["conf"]:
+                    best_plate[tid] = {"plate": matched["plate"], "conf": matched["confidence"]}
 
-            # ── searching: wait for a confident plate read ──
-            if ts_info["state"] == "searching":
-                if matched and matched["confidence"] >= PLATE_LOCK_CONF:
-                    ts_info["state"]      = "collecting"
-                    ts_info["plate"]      = matched["plate"]
-                    ts_info["plate_conf"] = matched["confidence"]
-                    ts_info["lock_time"]  = time_str
-                    ts_info["color_buf"]  = [(color, color_conf)]
-                    ts_info["brand_buf"]  = [(brand, brand_conf)]
-                elif matched and matched["confidence"] > ts_info["plate_conf"]:
-                    ts_info["plate"]      = matched["plate"]
-                    ts_info["plate_conf"] = matched["confidence"]
-                with _state_lock:
-                    existing_ids = {r["id"] for r in _log_rows}
-                    row = {"id": tid, "plate": ts_info["plate"],
-                           "plate_conf": f"{ts_info['plate_conf']:.0%}",
-                           "color": color, "color_conf": f"{color_conf:.0%}",
-                           "brand": brand, "brand_conf": f"{brand_conf:.0%}",
-                           "time": time_str, "status": "live"}
-                    if tid not in existing_ids:
-                        _log_rows.append(row)
-                    else:
-                        for r in _log_rows:
-                            if r["id"] == tid:
-                                r.update(row); break
+            plate_txt = best_plate.get(tid, {}).get("plate", "—")
 
-            # ── collecting: gather 6 windows after plate lock ──
-            elif ts_info["state"] == "collecting":
-                ts_info["color_buf"].append((color, color_conf))
-                ts_info["brand_buf"].append((brand, brand_conf))
-                if matched and matched["confidence"] > ts_info["plate_conf"]:
-                    ts_info["plate"]      = matched["plate"]
-                    ts_info["plate_conf"] = matched["confidence"]
-                n = len(ts_info["color_buf"])
-                with _state_lock:
+            with _state_lock:
+                existing_ids = {r["id"] for r in _log_rows}
+                row = {"id": tid, "plate": plate_txt,
+                       "color": stable_color, "color_conf": f"{stable_color_conf:.0%}",
+                       "brand": stable_brand, "brand_conf": f"{stable_brand_conf:.0%}",
+                       "time": time_str}
+                if tid not in existing_ids:
+                    _log_rows.append(row)
+                else:
                     for r in _log_rows:
                         if r["id"] == tid:
-                            r.update({"color": color, "color_conf": f"{color_conf:.0%}",
-                                      "brand": brand, "brand_conf": f"{brand_conf:.0%}",
-                                      "status": f"locking {n}/{COLLECT_WINDOWS}"}); break
-                if n >= COLLECT_WINDOWS:
-                    fc, fcc = majority(ts_info["color_buf"])
-                    fb, fbc = majority(ts_info["brand_buf"])
-                    ts_info["state"] = "finalized"
-                    with _state_lock:
-                        for r in _log_rows:
-                            if r["id"] == tid:
-                                r.update({"color": fc, "color_conf": f"{fcc:.0%}",
-                                          "brand": fb, "brand_conf": f"{fbc:.0%}",
-                                          "status": "✅ finalized"}); break
-                        # Add to finalized table (unique by plate number)
-                        existing_plates = {r["plate"] for r in _final_rows}
-                        if ts_info["plate"] not in existing_plates:
-                            _final_rows.append({
-                                "plate":      ts_info["plate"],
-                                "plate_conf": f"{ts_info['plate_conf']:.0%}",
-                                "color":      fc,
-                                "color_conf": f"{fcc:.0%}",
-                                "brand":      fb,
-                                "brand_conf": f"{fbc:.0%}",
-                                "time":       ts_info["lock_time"],
-                            })
+                            r.update(row); break
+
             infer_q.task_done()
 
     worker = threading.Thread(target=inference_worker, daemon=True)
@@ -430,27 +380,16 @@ async def get_frame():
 
 @app.get("/status")
 async def get_status():
-    """Returns progress + log rows + done flag + latest primary vehicle."""
     with _state_lock:
-        rows  = list(_log_rows)
-        final = list(_final_rows)
-    # Primary = last finalized row, or last live row if none finalized yet
-    primary = final[-1] if final else (rows[-1] if rows else None)
+        rows = list(_log_rows)
+    primary = rows[-1] if rows else None
     return JSONResponse({
         "progress": _progress,
         "done":     _done,
         "active":   _active_job,
         "rows":     rows,
-        "final":    final,
         "primary":  primary,
     })
-
-
-@app.get("/finalized")
-async def get_finalized():
-    """Returns only the finalized unique plate+colour+brand records."""
-    with _state_lock:
-        return JSONResponse(list(_final_rows))
 
 
 @app.post("/upload")
@@ -465,7 +404,6 @@ async def upload_video(file: UploadFile = File(...)):
         _done        = False
         _latest_jpeg = b""
         _log_rows.clear()
-        _final_rows.clear()
 
     try:
         contents = await file.read()

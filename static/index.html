@@ -190,39 +190,6 @@
   .conf-low  { color: #fca5a5; }
   #empty-row { text-align: center; color: #444; padding: 24px; }
 
-  /* Finalized table panel */
-  .final-panel {
-    background: #0d1a0f;
-    border: 2px solid #16a34a;
-    border-radius: 10px;
-    margin: 0 16px 16px 16px;
-    overflow: hidden;
-  }
-  .final-panel-title {
-    padding: 10px 16px;
-    font-size: 0.85rem;
-    font-weight: 700;
-    color: #4ade80;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    border-bottom: 1px solid #16a34a44;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  #final-count { font-size: 0.8rem; color: #4ade80; }
-  .final-scroll { max-height: 200px; overflow-y: auto; }
-  .status-pill {
-    display: inline-block;
-    font-size: 0.68rem;
-    padding: 1px 7px;
-    border-radius: 10px;
-    font-weight: 600;
-  }
-  .status-live     { background:#1e3a5f; color:#93c5fd; }
-  .status-locking  { background:#3b1f00; color:#fde68a; }
-  .status-final    { background:#14532d; color:#86efac; }
-
   /* Primary car card */
   .primary-card {
     background: #0d1f0f;
@@ -311,39 +278,17 @@
       <table>
         <thead>
           <tr>
-            <th>ID</th>
+            <th>Vehicle ID</th>
             <th>Plate</th>
             <th>Colour</th>
             <th>Brand</th>
-            <th>Status</th>
+            <th>Time</th>
           </tr>
         </thead>
         <tbody id="table-body">
           <tr><td colspan="5" id="empty-row">No detections yet</td></tr>
         </tbody>
       </table>
-    </div>
-
-    <!-- Finalized records table -->
-    <div class="final-panel" id="final-panel" style="display:none">
-      <div class="final-panel-title">
-        <span>✅ Finalized Records</span>
-        <span id="final-count">0</span>
-      </div>
-      <div class="final-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Plate</th>
-              <th>Conf</th>
-              <th>Colour</th>
-              <th>Brand</th>
-              <th>Time</th>
-            </tr>
-          </thead>
-          <tbody id="final-body"></tbody>
-        </table>
-      </div>
     </div>
 
   </div>
@@ -381,13 +326,6 @@ function colorBadge(color) {
   return `<span class="badge" style="background:${bg};${fg}">${color||'?'}</span>`;
 }
 
-function statusPill(s) {
-  if (!s) return '';
-  if (s.includes('finalized')) return `<span class="status-pill status-final">${s}</span>`;
-  if (s.includes('locking'))  return `<span class="status-pill status-locking">${s}</span>`;
-  return `<span class="status-pill status-live">${s}</span>`;
-}
-
 function renderLiveRows(rows) {
   const tbody = document.getElementById('table-body');
   const empty = document.getElementById('empty-row');
@@ -405,33 +343,11 @@ function renderLiveRows(rows) {
             : `<span class="badge badge-orange">${r.plate}</span>`}</td>
       <td>${colorBadge(r.color)} <span class="conf-pill ${confClass(r.color_conf||'0')}">${r.color_conf||'?'}</span></td>
       <td><span class="badge badge-blue">${r.brand||'?'}</span> <span class="conf-pill ${confClass(r.brand_conf||'0')}">${r.brand_conf||'?'}</span></td>
-      <td>${statusPill(r.status||'live')}</td>
+      <td style="color:#666;font-size:0.78rem">${r.time||''}</td>
     `;
   });
   lastRowCount = rows.length;
   document.getElementById('row-count').textContent = rows.length + ' row' + (rows.length !== 1 ? 's' : '');
-}
-
-let lastFinalCount = 0;
-function renderFinalRows(rows) {
-  if (!rows || rows.length === 0) return;
-  document.getElementById('final-panel').style.display = 'block';
-  document.getElementById('final-count').textContent = rows.length;
-  const tbody = document.getElementById('final-body');
-  for (let i = lastFinalCount; i < rows.length; i++) {
-    const r = rows[i];
-    const tr = document.createElement('tr');
-    tr.style.background = '#0a1f0c';
-    tr.innerHTML = `
-      <td><span class="badge badge-orange" style="font-size:0.9rem;letter-spacing:0.08em">${r.plate}</span></td>
-      <td><span class="conf-pill conf-high">${r.plate_conf}</span></td>
-      <td>${colorBadge(r.color)} <span class="conf-pill ${confClass(r.color_conf||'0')}">${r.color_conf}</span></td>
-      <td><span class="badge badge-blue">${r.brand}</span> <span class="conf-pill ${confClass(r.brand_conf||'0')}">${r.brand_conf}</span></td>
-      <td style="color:#4ade80;font-size:0.78rem">${r.time}</td>
-    `;
-    tbody.appendChild(tr);
-  }
-  lastFinalCount = rows.length;
 }
 
 function updatePrimaryCard(p) {
@@ -447,14 +363,12 @@ function updatePrimaryCard(p) {
 function pollStatus() {
   fetch(BASE + '/status').then(r => r.json()).then(data => {
     if (data.rows) renderLiveRows(data.rows);
-    if (data.final) renderFinalRows(data.final);
     if (data.primary) updatePrimaryCard(data.primary);
     if (data.progress !== undefined) {
       document.getElementById('progress-fg').style.width = data.progress + '%';
-      const fin = (data.final||[]).length;
       document.getElementById('status-text').textContent =
-        data.done ? `✅ Done — ${fin} finalized · ${(data.rows||[]).length} tracked`
-                  : `Processing… ${data.progress}%  ·  ${fin} finalized`;
+        data.done ? `✅ Done — ${(data.rows||[]).length} vehicle(s) detected`
+                  : `Processing… ${data.progress}%  ·  ${(data.rows||[]).length} vehicle(s)`;
     }
     if (data.done) stopPolling();
   }).catch(() => {});
@@ -481,13 +395,10 @@ document.getElementById('run-btn').addEventListener('click', async () => {
   btn.textContent = 'Uploading…';
 
   // Reset UI
-  lastRowCount = 0; lastFinalCount = 0;
+  lastRowCount = 0;
   document.getElementById('table-body').innerHTML =
     '<tr><td colspan="5" id="empty-row">No detections yet</td></tr>';
   document.getElementById('row-count').textContent = '0 rows';
-  document.getElementById('final-body').innerHTML = '';
-  document.getElementById('final-count').textContent = '0';
-  document.getElementById('final-panel').style.display = 'none';
   document.getElementById('primary-card').classList.remove('active');
   document.getElementById('pc-plate').textContent = '—';
   document.getElementById('pc-color').textContent = '—';
