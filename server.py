@@ -237,7 +237,11 @@ def _run_video(video_path: str):
     color_votes   = {}   # tid -> [(color, conf), ...]
     brand_votes   = {}   # tid -> [(brand, conf), ...]
     best_plate    = {}   # tid -> {"plate": str, "conf": float}
+    locked        = {}   # tid -> {"color", "color_conf", "brand", "brand_conf"} once confident
+    prev_centres  = {}   # tid -> (cx, cy) last frame — for motion detection
     VOTE_WINDOW   = 7
+    LOCK_CONF     = 0.75   # lock colour+brand once both exceed this
+    MOTION_THRESH = 0.04   # fraction of frame diagonal — skip inference if centre moved more
 
     def majority(votes):
         counts = Counter(v[0] for v in votes)
@@ -257,9 +261,33 @@ def _run_video(video_path: str):
                 infer_q.task_done()
                 continue
 
-            color, color_conf, brand, brand_conf = classify_crop(crop)
             mins, secs = int(ts) // 60, int(ts) % 60
             time_str   = f"{mins:02d}:{secs:02d}"
+
+            with inner_lock:
+                matched = match_plate(last_plate, bbox)
+
+            # Always keep the highest-confidence plate seen for this track
+            if matched:
+                prev = best_plate.get(tid, {"plate": "—", "conf": 0.0})
+                if matched["confidence"] >= prev["conf"]:
+                    best_plate[tid] = {"plate": matched["plate"], "conf": matched["confidence"]}
+            plate_txt = best_plate.get(tid, {}).get("plate", "—")
+
+            # ── Option A: if colour+brand already locked, skip classification ──
+            if tid in locked:
+                lk = locked[tid]
+                with inner_lock:
+                    track_store[tid] = {"color": lk["color"], "color_conf": lk["color_conf"],
+                                        "brand": lk["brand"], "conf": lk["brand_conf"]}
+                with _state_lock:
+                    for r in _log_rows:
+                        if r["id"] == tid:
+                            r.update({"plate": plate_txt, "time": time_str}); break
+                infer_q.task_done()
+                continue
+
+            color, color_conf, brand, brand_conf = classify_crop(crop)
 
             # Accumulate votes, keep rolling window
             color_votes.setdefault(tid, []).append((color, color_conf))
@@ -273,15 +301,11 @@ def _run_video(video_path: str):
             with inner_lock:
                 track_store[tid] = {"color": stable_color, "color_conf": stable_color_conf,
                                     "brand": stable_brand, "conf": stable_brand_conf}
-                matched = match_plate(last_plate, bbox)
 
-            # Always keep the highest-confidence plate seen for this track
-            if matched:
-                prev = best_plate.get(tid, {"plate": "—", "conf": 0.0})
-                if matched["confidence"] >= prev["conf"]:
-                    best_plate[tid] = {"plate": matched["plate"], "conf": matched["confidence"]}
-
-            plate_txt = best_plate.get(tid, {}).get("plate", "—")
+            # ── Option A: lock once both confidences exceed threshold ──
+            if stable_color_conf >= LOCK_CONF and stable_brand_conf >= LOCK_CONF:
+                locked[tid] = {"color": stable_color, "color_conf": stable_color_conf,
+                               "brand": stable_brand, "brand_conf": stable_brand_conf}
 
             with _state_lock:
                 existing_ids = {r["id"] for r in _log_rows}
@@ -326,14 +350,28 @@ def _run_video(video_path: str):
                         last_plate.clear()
                         last_plate.extend(new_plates)
 
-            # Only run inference on the primary (largest) vehicle
+            # Option C: skip inference if primary vehicle is moving fast
             primary = next((t for t in tracks if t.get("primary")), None)
             if primary:
-                try:
-                    infer_q.put_nowait((primary["track_id"], primary["crop"],
-                                       primary["bbox"], timestamp))
-                except queue.Full:
-                    pass
+                tid = primary["track_id"]
+                x1, y1, x2, y2 = primary["bbox"]
+                cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+                fh, fw = frame.shape[:2]
+                diag   = (fh ** 2 + fw ** 2) ** 0.5
+                prev   = prev_centres.get(tid)
+                if prev:
+                    dist = ((cx - prev[0]) ** 2 + (cy - prev[1]) ** 2) ** 0.5
+                    moving = (dist / diag) > MOTION_THRESH
+                else:
+                    moving = False
+                prev_centres[tid] = (cx, cy)
+
+                if not moving:
+                    try:
+                        infer_q.put_nowait((tid, primary["crop"],
+                                           primary["bbox"], timestamp))
+                    except queue.Full:
+                        pass
 
             # Update latest JPEG every 2nd frame
             if frame_idx % 2 == 0:
