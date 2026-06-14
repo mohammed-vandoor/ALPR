@@ -238,10 +238,8 @@ def _run_video(video_path: str):
     brand_votes   = {}   # tid -> [(brand, conf), ...]
     best_plate    = {}   # tid -> {"plate": str, "conf": float}
     locked        = {}   # tid -> {"color", "color_conf", "brand", "brand_conf"} once confident
-    prev_centres  = {}   # tid -> (cx, cy) last frame — for motion detection
     VOTE_WINDOW   = 7
     LOCK_CONF     = 0.75   # lock colour+brand once both exceed this
-    MOTION_THRESH = 0.15   # fraction of frame diagonal — skip inference if centre moved more
 
     def majority(votes):
         counts = Counter(v[0] for v in votes)
@@ -350,28 +348,13 @@ def _run_video(video_path: str):
                         last_plate.clear()
                         last_plate.extend(new_plates)
 
-            # Option C: skip inference if primary vehicle is moving fast
             primary = next((t for t in tracks if t.get("primary")), None)
             if primary:
-                tid = primary["track_id"]
-                x1, y1, x2, y2 = primary["bbox"]
-                cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-                fh, fw = frame.shape[:2]
-                diag   = (fh ** 2 + fw ** 2) ** 0.5
-                prev   = prev_centres.get(tid)
-                if prev:
-                    dist = ((cx - prev[0]) ** 2 + (cy - prev[1]) ** 2) ** 0.5
-                    moving = (dist / diag) > MOTION_THRESH
-                else:
-                    moving = False
-                prev_centres[tid] = (cx, cy)
-
-                if not moving:
-                    try:
-                        infer_q.put_nowait((tid, primary["crop"],
-                                           primary["bbox"], timestamp))
-                    except queue.Full:
-                        pass
+                try:
+                    infer_q.put_nowait((primary["track_id"], primary["crop"],
+                                       primary["bbox"], timestamp))
+                except queue.Full:
+                    pass
 
             # Update latest JPEG every 2nd frame
             if frame_idx % 2 == 0:
